@@ -1,0 +1,114 @@
+use webpx::{Encoder, EncoderConfig, Unstoppable, YuvPlanesRef, embed_exif, embed_icc, embed_xmp};
+
+use crate::cli::{Job, Mode};
+use crate::decode::{DecodedInput, WorkingImage};
+use crate::error::{Error, Result};
+use crate::sharpyuv;
+
+pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
+    match job.mode {
+        Mode::Lossy => encode_lossy(job, decoded),
+        Mode::Lossless => encode_lossless(job, decoded, None),
+        Mode::NearLossless(value) => encode_lossless(job, decoded, Some(value)),
+    }
+}
+
+fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
+    let planes = sharpyuv::rgba16_to_yuv420(
+        &decoded.image.data,
+        decoded.image.width,
+        decoded.image.height,
+        false,
+    )?;
+
+    let config = base_config(job)
+        .quality(job.quality)
+        .method(job.method)
+        .alpha_quality(job.alpha_quality)
+        .sharp_yuv(true)
+        .exact(job.exact);
+
+    let webp = Encoder::new_yuv(YuvPlanesRef::from(&planes))
+        .config(config)
+        .encode(Unstoppable)
+        .map_err(|err| Error::encode(format!("lossy WebP encode failed: {err}")))?;
+
+    attach_metadata(webp, job, decoded)
+}
+
+fn encode_lossless(
+    job: &Job,
+    decoded: &DecodedInput,
+    near_lossless: Option<u8>,
+) -> Result<Vec<u8>> {
+    let argb = rgba16_to_argb8(&decoded.image);
+    let mut config = base_config(job)
+        .quality(job.quality)
+        .method(job.method)
+        .lossless(true)
+        .alpha_quality(job.alpha_quality)
+        .exact(job.exact);
+
+    if let Some(value) = near_lossless {
+        config = config.near_lossless(value);
+    }
+
+    let webp = Encoder::new_argb(&argb, decoded.image.width, decoded.image.height)
+        .config(config)
+        .encode(Unstoppable)
+        .map_err(|err| Error::encode(format!("lossless WebP encode failed: {err}")))?;
+
+    attach_metadata(webp, job, decoded)
+}
+
+fn base_config(job: &Job) -> EncoderConfig {
+    let mut config = EncoderConfig::new();
+    if let Some(value) = job.sns_strength {
+        config = config.sns_strength(value);
+    }
+    if let Some(value) = job.filter_strength {
+        config = config.filter_strength(value);
+    }
+    config
+}
+
+fn attach_metadata(mut webp: Vec<u8>, job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
+    if job.metadata.keep_icc()
+        && let Some(icc) = &decoded.metadata.icc
+    {
+        webp = embed_icc(&webp, icc)
+            .map_err(|err| Error::encode(format!("failed to attach ICC profile: {err}")))?;
+    }
+    if job.metadata.keep_exif()
+        && let Some(exif) = &decoded.metadata.exif
+    {
+        webp = embed_exif(&webp, exif)
+            .map_err(|err| Error::encode(format!("failed to attach EXIF metadata: {err}")))?;
+    }
+    if job.metadata.keep_xmp()
+        && let Some(xmp) = &decoded.metadata.xmp
+    {
+        webp = embed_xmp(&webp, xmp)
+            .map_err(|err| Error::encode(format!("failed to attach XMP metadata: {err}")))?;
+    }
+
+    Ok(webp)
+}
+
+fn rgba16_to_argb8(image: &WorkingImage) -> Vec<u32> {
+    image
+        .data
+        .chunks_exact(4)
+        .map(|pixel| {
+            let r = down16_to_8(pixel[0]) as u32;
+            let g = down16_to_8(pixel[1]) as u32;
+            let b = down16_to_8(pixel[2]) as u32;
+            let a = down16_to_8(pixel[3]) as u32;
+            (a << 24) | (r << 16) | (g << 8) | b
+        })
+        .collect()
+}
+
+fn down16_to_8(value: u16) -> u8 {
+    ((value as u32 * 255 + 32767) / 65535) as u8
+}
