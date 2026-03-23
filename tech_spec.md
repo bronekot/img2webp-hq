@@ -96,6 +96,8 @@
 Пайплайн строится вокруг следующих принципов:
 
 - повышенная внутренняя точность сохраняется как можно дольше;
+- `u16` high-quality path остаётся основным режимом по умолчанию;
+- expert-флаг `-fast` переключает пайплайн в `RGBA8` internal path;
 - resize выполняется только в linear-light;
 - alpha обрабатывается в premultiplied-представлении;
 - lossy path использует SharpYUV;
@@ -210,6 +212,21 @@ JPEG decode path должен уметь выдавать `u16` и/или `f32` 
 возможного этапа.
 
 Ранняя потеря точности недопустима.
+
+### 7.3 Fast mode
+
+Для практических сценариев, где важнее скорость и более простой код-путь,
+поддерживается expert-режим:
+
+- `-fast`
+
+Семантика `-fast`:
+
+- decode выполняется в `RGBA8`, если это возможно;
+- при `16-bit` входе ранняя квантовка до `8-bit` допустима;
+- CMS и resize также работают в `RGBA8`;
+- encode stage получает уже `8-bit` pipeline output;
+- это осознанный компромисс в пользу скорости, а не качества.
 
 ---
 
@@ -473,6 +490,7 @@ high-quality pipeline.
 - `-lossless`
 - `-near_lossless <int>`
 - `-exact`
+- `-fast`
 - `-metadata none|all|exif|icc|xmp`
 
 Поведение:
@@ -480,6 +498,7 @@ high-quality pipeline.
 - если не указан ни `-lossless`, ни `-near_lossless`, используется lossy mode;
 - `-lossless` и `-near_lossless` одновременно задавать нельзя;
 - `-near_lossless` активирует near-lossless mode;
+- `-fast` включает `8-bit` internal pipeline;
 - `-sharp_yuv` принимается для совместимости с `cwebp`, но в `v1` lossy path
   использует SharpYUV всегда.
 

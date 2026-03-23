@@ -8,22 +8,22 @@ use crate::error::Result;
 use crate::resize;
 
 pub fn run(job: Job) -> Result<()> {
-    let mut decoded = decode::decode(&job.input)?;
+    let mut decoded = decode::decode(&job.input, job.fast)?;
 
     let target =
         resize::compute_target_size(decoded.image.width, decoded.image.height, &job.resize)?;
     cms::validate_source_profile(decoded.metadata.icc.as_deref(), target.resized)?;
     if target.resized {
         let cms = ResizeColorPipeline::new(decoded.metadata.icc.as_deref())?;
-        cms.to_linear_in_place(&mut decoded.image.data)?;
+        cms.to_linear_in_place(&mut decoded.image)?;
         let filter = resize::resolve_filter(
             decoded.image.width,
             decoded.image.height,
             target,
             job.resize.filter,
         );
-        decoded.image = resize::resize_rgba16(decoded.image, target, filter)?;
-        cms.from_linear_in_place(&mut decoded.image.data)?;
+        decoded.image = resize::resize(decoded.image, target, filter)?;
+        cms.from_linear_in_place(&mut decoded.image)?;
     }
 
     let webp = encode::encode(&job, &decoded)?;

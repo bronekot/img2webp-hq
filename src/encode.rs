@@ -1,7 +1,7 @@
-use webpx::{Encoder, EncoderConfig, Unstoppable, YuvPlanesRef, embed_exif, embed_icc, embed_xmp};
+use webpx::{embed_exif, embed_icc, embed_xmp, Encoder, EncoderConfig, Unstoppable, YuvPlanesRef};
 
 use crate::cli::{Job, Mode};
-use crate::decode::{DecodedInput, WorkingImage};
+use crate::decode::{DecodedInput, WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 use crate::sharpyuv;
 
@@ -14,12 +14,14 @@ pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
 }
 
 fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
-    let planes = sharpyuv::rgba16_to_yuv420(
-        &decoded.image.data,
-        decoded.image.width,
-        decoded.image.height,
-        false,
-    )?;
+    let planes = match &decoded.image.data {
+        WorkingData::U8(data) => {
+            sharpyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
+        }
+        WorkingData::U16(data) => {
+            sharpyuv::rgba16_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
+        }
+    };
 
     let config = base_config(job)
         .quality(job.quality)
@@ -41,7 +43,7 @@ fn encode_lossless(
     decoded: &DecodedInput,
     near_lossless: Option<u8>,
 ) -> Result<Vec<u8>> {
-    let argb = rgba16_to_argb8(&decoded.image);
+    let argb = rgba_to_argb8(&decoded.image);
     let mut config = base_config(job)
         .quality(job.quality)
         .method(job.method)
@@ -95,18 +97,29 @@ fn attach_metadata(mut webp: Vec<u8>, job: &Job, decoded: &DecodedInput) -> Resu
     Ok(webp)
 }
 
-fn rgba16_to_argb8(image: &WorkingImage) -> Vec<u32> {
-    image
-        .data
-        .chunks_exact(4)
-        .map(|pixel| {
-            let r = down16_to_8(pixel[0]) as u32;
-            let g = down16_to_8(pixel[1]) as u32;
-            let b = down16_to_8(pixel[2]) as u32;
-            let a = down16_to_8(pixel[3]) as u32;
-            (a << 24) | (r << 16) | (g << 8) | b
-        })
-        .collect()
+fn rgba_to_argb8(image: &WorkingImage) -> Vec<u32> {
+    match &image.data {
+        WorkingData::U8(data) => data
+            .chunks_exact(4)
+            .map(|pixel| {
+                let r = pixel[0] as u32;
+                let g = pixel[1] as u32;
+                let b = pixel[2] as u32;
+                let a = pixel[3] as u32;
+                (a << 24) | (r << 16) | (g << 8) | b
+            })
+            .collect(),
+        WorkingData::U16(data) => data
+            .chunks_exact(4)
+            .map(|pixel| {
+                let r = down16_to_8(pixel[0]) as u32;
+                let g = down16_to_8(pixel[1]) as u32;
+                let b = down16_to_8(pixel[2]) as u32;
+                let a = down16_to_8(pixel[3]) as u32;
+                (a << 24) | (r << 16) | (g << 8) | b
+            })
+            .collect(),
+    }
 }
 
 fn down16_to_8(value: u16) -> u8 {

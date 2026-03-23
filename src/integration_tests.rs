@@ -9,7 +9,7 @@ use tempfile::tempdir;
 use webpx::{get_exif, get_icc_profile};
 
 use crate::cli::{Job, Mode, ResizeOptions};
-use crate::decode;
+use crate::decode::{self, WorkingData};
 use crate::error::Error;
 use crate::metadata::MetadataPolicy;
 use crate::pipeline;
@@ -25,6 +25,7 @@ fn base_job(input: &Path, output: &Path) -> Job {
         sns_strength: None,
         filter_strength: None,
         exact: false,
+        fast: false,
         metadata: MetadataPolicy::Icc,
         resize: ResizeOptions {
             width: None,
@@ -125,7 +126,7 @@ fn lossless_roundtrips_pixels_and_preserves_icc() {
     ];
 
     write_png_rgba(&input, 2, 2, &pixels, Some(icc), None);
-    let decoded_input = decode::decode(&input).unwrap();
+    let decoded_input = decode::decode(&input, false).unwrap();
     assert!(decoded_input.metadata.icc.is_some());
 
     let job = base_job(&input, &output);
@@ -185,7 +186,7 @@ fn applies_orientation_and_clears_exif_metadata() {
         None,
         Some(exif_with_orientation(Orientation::Rotate90)),
     );
-    let decoded_input = decode::decode(&input).unwrap();
+    let decoded_input = decode::decode(&input, false).unwrap();
     assert_eq!(decoded_input.metadata.orientation, Orientation::Rotate90);
     assert!(decoded_input.metadata.exif.is_some());
 
@@ -232,4 +233,31 @@ fn rejects_non_rgb_icc_profile() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+#[test]
+fn fast_mode_decodes_and_processes_in_u8() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("fast.png");
+    let output = dir.path().join("fast.webp");
+    let pixels = vec![
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+    ];
+
+    write_png_rgba(&input, 2, 2, &pixels, None, None);
+
+    let decoded_input = decode::decode(&input, true).unwrap();
+    assert!(matches!(decoded_input.image.data, WorkingData::U8(_)));
+
+    let mut job = base_job(&input, &output);
+    job.fast = true;
+    job.mode = Mode::Lossy;
+    job.metadata = MetadataPolicy::None;
+    job.resize.width = Some(4);
+    job.resize.height = Some(4);
+
+    pipeline::run(job).unwrap();
+
+    let (width, height, _pixels, _icc, _exif) = read_webp(&output);
+    assert_eq!((width, height), (4, 4));
 }

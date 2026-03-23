@@ -4,6 +4,7 @@ use lcms2::{
     Transform, XYZ2xyY,
 };
 
+use crate::decode::{WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 
 pub struct ResizeColorPipeline {
@@ -42,34 +43,78 @@ impl ResizeColorPipeline {
         })
     }
 
-    pub fn to_linear_in_place(&self, rgba16: &mut [u16]) -> Result<()> {
-        let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
-            &self.source_profile,
-            PixelFormat::RGBA_16,
-            &self.linear_profile,
-            PixelFormat::RGBA_16,
-            Intent::Perceptual,
-            Flags::COPY_ALPHA,
-        )
-        .map_err(|err| Error::color(format!("failed to build source->linear transform: {err}")))?;
-        let pixels = cast_slice_mut::<u16, [u16; 4]>(rgba16);
-        transform.transform_in_place(pixels);
-        Ok(())
+    pub fn to_linear_in_place(&self, image: &mut WorkingImage) -> Result<()> {
+        match &mut image.data {
+            WorkingData::U8(rgba8) => {
+                let transform = Transform::<[u8; 4], [u8; 4]>::new_flags(
+                    &self.source_profile,
+                    PixelFormat::RGBA_8,
+                    &self.linear_profile,
+                    PixelFormat::RGBA_8,
+                    Intent::Perceptual,
+                    Flags::COPY_ALPHA,
+                )
+                .map_err(|err| {
+                    Error::color(format!("failed to build source->linear transform: {err}"))
+                })?;
+                let pixels = cast_slice_mut::<u8, [u8; 4]>(rgba8);
+                transform.transform_in_place(pixels);
+                Ok(())
+            }
+            WorkingData::U16(rgba16) => {
+                let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
+                    &self.source_profile,
+                    PixelFormat::RGBA_16,
+                    &self.linear_profile,
+                    PixelFormat::RGBA_16,
+                    Intent::Perceptual,
+                    Flags::COPY_ALPHA,
+                )
+                .map_err(|err| {
+                    Error::color(format!("failed to build source->linear transform: {err}"))
+                })?;
+                let pixels = cast_slice_mut::<u16, [u16; 4]>(rgba16);
+                transform.transform_in_place(pixels);
+                Ok(())
+            }
+        }
     }
 
-    pub fn from_linear_in_place(&self, rgba16: &mut [u16]) -> Result<()> {
-        let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
-            &self.linear_profile,
-            PixelFormat::RGBA_16,
-            &self.source_profile,
-            PixelFormat::RGBA_16,
-            Intent::Perceptual,
-            Flags::COPY_ALPHA,
-        )
-        .map_err(|err| Error::color(format!("failed to build linear->source transform: {err}")))?;
-        let pixels = cast_slice_mut::<u16, [u16; 4]>(rgba16);
-        transform.transform_in_place(pixels);
-        Ok(())
+    pub fn from_linear_in_place(&self, image: &mut WorkingImage) -> Result<()> {
+        match &mut image.data {
+            WorkingData::U8(rgba8) => {
+                let transform = Transform::<[u8; 4], [u8; 4]>::new_flags(
+                    &self.linear_profile,
+                    PixelFormat::RGBA_8,
+                    &self.source_profile,
+                    PixelFormat::RGBA_8,
+                    Intent::Perceptual,
+                    Flags::COPY_ALPHA,
+                )
+                .map_err(|err| {
+                    Error::color(format!("failed to build linear->source transform: {err}"))
+                })?;
+                let pixels = cast_slice_mut::<u8, [u8; 4]>(rgba8);
+                transform.transform_in_place(pixels);
+                Ok(())
+            }
+            WorkingData::U16(rgba16) => {
+                let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
+                    &self.linear_profile,
+                    PixelFormat::RGBA_16,
+                    &self.source_profile,
+                    PixelFormat::RGBA_16,
+                    Intent::Perceptual,
+                    Flags::COPY_ALPHA,
+                )
+                .map_err(|err| {
+                    Error::color(format!("failed to build linear->source transform: {err}"))
+                })?;
+                let pixels = cast_slice_mut::<u16, [u16; 4]>(rgba16);
+                transform.transform_in_place(pixels);
+                Ok(())
+            }
+        }
     }
 }
 

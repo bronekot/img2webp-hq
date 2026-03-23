@@ -61,13 +61,79 @@ unsafe extern "C" {
 
 const SHARPYUV_VERSION: i32 = (0 << 24) | (4 << 16) | 1;
 
+pub fn rgba8_to_yuv420(
+    image: &[u8],
+    width: u32,
+    height: u32,
+    assume_linear: bool,
+) -> Result<YuvPlanes> {
+    convert_to_yuv420(
+        width,
+        height,
+        has_alpha_u8(image),
+        if assume_linear {
+            SharpYuvTransferFunctionType::Linear
+        } else {
+            SharpYuvTransferFunctionType::Srgb
+        },
+        image.as_ptr() as *const c_void,
+        unsafe { image.as_ptr().add(1) } as *const c_void,
+        unsafe { image.as_ptr().add(2) } as *const c_void,
+        4,
+        (width * 4) as i32,
+        8,
+        |alpha| {
+            for (dst, pixel) in alpha.iter_mut().zip(image.chunks_exact(4)) {
+                *dst = pixel[3];
+            }
+        },
+    )
+}
+
 pub fn rgba16_to_yuv420(
     image: &[u16],
     width: u32,
     height: u32,
     assume_linear: bool,
 ) -> Result<YuvPlanes> {
-    let mut planes = YuvPlanes::new(width, height, has_alpha(image));
+    let bytes = bytemuck::cast_slice::<u16, u8>(image);
+    convert_to_yuv420(
+        width,
+        height,
+        has_alpha_u16(image),
+        if assume_linear {
+            SharpYuvTransferFunctionType::Linear
+        } else {
+            SharpYuvTransferFunctionType::Srgb
+        },
+        bytes.as_ptr() as *const c_void,
+        unsafe { bytes.as_ptr().add(2) } as *const c_void,
+        unsafe { bytes.as_ptr().add(4) } as *const c_void,
+        8,
+        (width * 8) as i32,
+        16,
+        |alpha| {
+            for (dst, pixel) in alpha.iter_mut().zip(image.chunks_exact(4)) {
+                *dst = down16_to_8(pixel[3]);
+            }
+        },
+    )
+}
+
+fn convert_to_yuv420(
+    width: u32,
+    height: u32,
+    with_alpha: bool,
+    transfer_type: SharpYuvTransferFunctionType,
+    r_ptr: *const c_void,
+    g_ptr: *const c_void,
+    b_ptr: *const c_void,
+    rgb_step: i32,
+    rgb_stride: i32,
+    rgb_bit_depth: i32,
+    fill_alpha: impl FnOnce(&mut [u8]),
+) -> Result<YuvPlanes> {
+    let mut planes = YuvPlanes::new(width, height, with_alpha);
 
     let matrix = unsafe { SharpYuvGetConversionMatrix(SharpYuvMatrixType::Webp) };
     if matrix.is_null() {
@@ -76,23 +142,12 @@ pub fn rgba16_to_yuv420(
 
     let mut options = SharpYuvOptions {
         yuv_matrix: matrix,
-        transfer_type: if assume_linear {
-            SharpYuvTransferFunctionType::Linear
-        } else {
-            SharpYuvTransferFunctionType::Srgb
-        },
+        transfer_type,
     };
     let init_ok = unsafe { SharpYuvOptionsInitInternal(matrix, &mut options, SHARPYUV_VERSION) };
     if init_ok == 0 {
         return Err(Error::encode("failed to initialize SharpYUV options"));
     }
-
-    let bytes = bytemuck::cast_slice::<u16, u8>(image);
-    let rgb_step = 8i32;
-    let rgb_stride = (width * 8) as i32;
-    let r_ptr = bytes.as_ptr() as *const c_void;
-    let g_ptr = unsafe { bytes.as_ptr().add(2) } as *const c_void;
-    let b_ptr = unsafe { bytes.as_ptr().add(4) } as *const c_void;
 
     let ok = unsafe {
         SharpYuvConvertWithOptions(
@@ -101,7 +156,7 @@ pub fn rgba16_to_yuv420(
             b_ptr,
             rgb_step,
             rgb_stride,
-            16,
+            rgb_bit_depth,
             planes.y.as_mut_ptr() as *mut c_void,
             planes.y_stride as i32,
             planes.u.as_mut_ptr() as *mut c_void,
@@ -119,15 +174,17 @@ pub fn rgba16_to_yuv420(
     }
 
     if let Some(alpha) = &mut planes.a {
-        for (dst, pixel) in alpha.iter_mut().zip(image.chunks_exact(4)) {
-            *dst = down16_to_8(pixel[3]);
-        }
+        fill_alpha(alpha);
     }
 
     Ok(planes)
 }
 
-fn has_alpha(image: &[u16]) -> bool {
+fn has_alpha_u8(image: &[u8]) -> bool {
+    image.chunks_exact(4).any(|pixel| pixel[3] != u8::MAX)
+}
+
+fn has_alpha_u16(image: &[u16]) -> bool {
     image.chunks_exact(4).any(|pixel| pixel[3] != u16::MAX)
 }
 

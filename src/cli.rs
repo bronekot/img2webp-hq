@@ -61,6 +61,9 @@ struct Cli {
     #[arg(long = "exact", action = clap::ArgAction::SetTrue)]
     exact: bool,
 
+    #[arg(long = "fast", action = clap::ArgAction::SetTrue)]
+    fast: bool,
+
     #[arg(long = "metadata", value_enum, default_value_t = MetadataArg::Icc)]
     metadata: MetadataArg,
 
@@ -122,6 +125,7 @@ pub struct Job {
     pub sns_strength: Option<u8>,
     pub filter_strength: Option<u8>,
     pub exact: bool,
+    pub fast: bool,
     pub metadata: MetadataPolicy,
     pub resize: ResizeOptions,
 }
@@ -224,6 +228,7 @@ fn return_job(
         sns_strength: cli.sns_strength,
         filter_strength: cli.filter_strength,
         exact: cli.exact,
+        fast: cli.fast,
         metadata,
         resize: ResizeOptions {
             width: cli.width,
@@ -244,6 +249,7 @@ fn normalize_cwebp_style_args(args: impl IntoIterator<Item = OsString>) -> Vec<O
         "lossless",
         "near_lossless",
         "exact",
+        "fast",
         "metadata",
     ];
 
@@ -278,6 +284,7 @@ mod tests {
             OsString::from("-metadata"),
             OsString::from("icc"),
             OsString::from("-lossless"),
+            OsString::from("-fast"),
         ]);
         let values: Vec<_> = args
             .into_iter()
@@ -285,6 +292,7 @@ mod tests {
             .collect();
         assert_eq!(values[1], "--metadata");
         assert_eq!(values[3], "--lossless");
+        assert_eq!(values[4], "--fast");
     }
 
     #[test]
@@ -301,6 +309,7 @@ mod tests {
             lossless: false,
             near_lossless: None,
             exact: false,
+            fast: false,
             metadata: MetadataArg::Icc,
             width: Some(1200),
             height: None,

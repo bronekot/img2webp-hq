@@ -4,7 +4,7 @@ use fast_image_resize::{
 };
 
 use crate::cli::{ResizeFilter, ResizeOptions};
-use crate::decode::WorkingImage;
+use crate::decode::{WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy)]
@@ -80,44 +80,59 @@ pub fn compute_target_size(
     })
 }
 
-pub fn resize_rgba16(
-    image: WorkingImage,
-    target: TargetSize,
-    filter: ResizeFilter,
-) -> Result<WorkingImage> {
+pub fn resize(image: WorkingImage, target: TargetSize, filter: ResizeFilter) -> Result<WorkingImage> {
     if !target.resized {
         return Ok(image);
     }
-
-    let src = Image::from_vec_u8(
-        image.width,
-        image.height,
-        u16_to_bytes(image.data),
-        PixelType::U16x4,
-    )
-    .map_err(|err| Error::invalid(format!("invalid source buffer for resize: {err}")))?;
-    let mut dst = Image::new(target.width, target.height, PixelType::U16x4);
 
     let filter = match filter {
         ResizeFilter::Lanczos3 => FilterType::Lanczos3,
         ResizeFilter::CatmullRom => FilterType::CatmullRom,
         ResizeFilter::Mitchell => FilterType::Mitchell,
     };
-
     let options = FirResizeOptions::new()
         .resize_alg(ResizeAlg::Convolution(filter))
         .use_alpha(true);
 
-    let mut resizer = Resizer::new();
-    resizer
-        .resize(&src, &mut dst, Some(&options))
-        .map_err(|err| Error::encode(format!("resize failed: {err}")))?;
+    match image.data {
+        WorkingData::U8(data) => {
+            let src = Image::from_vec_u8(image.width, image.height, data, PixelType::U8x4)
+                .map_err(|err| Error::invalid(format!("invalid source buffer for resize: {err}")))?;
+            let mut dst = Image::new(target.width, target.height, PixelType::U8x4);
 
-    Ok(WorkingImage {
-        width: target.width,
-        height: target.height,
-        data: bytes_to_u16(dst.into_vec()),
-    })
+            let mut resizer = Resizer::new();
+            resizer
+                .resize(&src, &mut dst, Some(&options))
+                .map_err(|err| Error::encode(format!("resize failed: {err}")))?;
+
+            Ok(WorkingImage {
+                width: target.width,
+                height: target.height,
+                data: WorkingData::U8(dst.into_vec()),
+            })
+        }
+        WorkingData::U16(data) => {
+            let src = Image::from_vec_u8(
+                image.width,
+                image.height,
+                u16_to_bytes(data),
+                PixelType::U16x4,
+            )
+            .map_err(|err| Error::invalid(format!("invalid source buffer for resize: {err}")))?;
+            let mut dst = Image::new(target.width, target.height, PixelType::U16x4);
+
+            let mut resizer = Resizer::new();
+            resizer
+                .resize(&src, &mut dst, Some(&options))
+                .map_err(|err| Error::encode(format!("resize failed: {err}")))?;
+
+            Ok(WorkingImage {
+                width: target.width,
+                height: target.height,
+                data: WorkingData::U16(bytes_to_u16(dst.into_vec())),
+            })
+        }
+    }
 }
 
 fn scale_rounded(value: u32, numer: u32, denom: u32) -> u32 {
