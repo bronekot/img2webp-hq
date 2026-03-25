@@ -4,6 +4,7 @@ use crate::cli::{Job, Mode};
 use crate::decode::{DecodedInput, WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 use crate::sharpyuv;
+use crate::simpleyuv;
 
 pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
     match job.mode {
@@ -14,12 +15,23 @@ pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
 }
 
 fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
-    let planes = match &decoded.image.data {
-        WorkingData::U8(data) => {
-            sharpyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
+    let planes = if job.fast {
+        match &decoded.image.data {
+            WorkingData::U8(data) => {
+                simpleyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height)?
+            }
+            WorkingData::U16(data) => {
+                simpleyuv::rgba16_to_yuv420(data, decoded.image.width, decoded.image.height)?
+            }
         }
-        WorkingData::U16(data) => {
-            sharpyuv::rgba16_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
+    } else {
+        match &decoded.image.data {
+            WorkingData::U8(data) => {
+                sharpyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
+            }
+            WorkingData::U16(data) => {
+                sharpyuv::rgba16_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
+            }
         }
     };
 
@@ -27,7 +39,7 @@ fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
         .quality(job.quality)
         .method(job.method)
         .alpha_quality(job.alpha_quality)
-        .sharp_yuv(true)
+        .sharp_yuv(!job.fast)
         .exact(job.exact);
 
     let webp = Encoder::new_yuv(YuvPlanesRef::from(&planes))

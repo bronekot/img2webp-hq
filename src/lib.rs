@@ -7,6 +7,7 @@ mod metadata;
 mod pipeline;
 mod resize;
 mod sharpyuv;
+mod simpleyuv;
 
 #[cfg(test)]
 mod integration_tests;
