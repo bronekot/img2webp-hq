@@ -261,3 +261,41 @@ fn fast_mode_decodes_and_processes_in_u8() {
     let (width, height, _pixels, _icc, _exif) = read_webp(&output);
     assert_eq!((width, height), (4, 4));
 }
+
+#[test]
+fn fast_mode_produces_comparable_output_to_normal() {
+    let dir = tempdir().unwrap();
+    let input = Path::new("test/1.jpeg");
+    let normal_output = dir.path().join("normal.webp");
+    let fast_output = dir.path().join("fast.webp");
+
+    let mut normal_job = base_job(input, &normal_output);
+    normal_job.fast = false;
+    normal_job.mode = Mode::Lossy;
+    normal_job.quality = 100.0;
+    normal_job.metadata = MetadataPolicy::None;
+
+    let mut fast_job = base_job(input, &fast_output);
+    fast_job.fast = true;
+    fast_job.mode = Mode::Lossy;
+    fast_job.quality = 100.0;
+    fast_job.metadata = MetadataPolicy::None;
+
+    pipeline::run(normal_job).unwrap();
+    pipeline::run(fast_job).unwrap();
+
+    let (_w, _h, normal_pixels, _, _) = read_webp(&normal_output);
+    let (_w, _h, fast_pixels, _, _) = read_webp(&fast_output);
+
+    let max_diff = normal_pixels
+        .iter()
+        .zip(fast_pixels.iter())
+        .map(|(n, f)| (*n as i32 - *f as i32).abs())
+        .max()
+        .unwrap();
+
+    assert!(
+        max_diff <= 2,
+        "Fast mode should match normal mode (max diff: {max_diff})"
+    );
+}
