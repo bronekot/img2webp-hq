@@ -80,7 +80,11 @@ pub fn compute_target_size(
     })
 }
 
-pub fn resize(image: WorkingImage, target: TargetSize, filter: ResizeFilter) -> Result<WorkingImage> {
+pub fn resize(
+    image: WorkingImage,
+    target: TargetSize,
+    filter: ResizeFilter,
+) -> Result<WorkingImage> {
     if !target.resized {
         return Ok(image);
     }
@@ -93,11 +97,14 @@ pub fn resize(image: WorkingImage, target: TargetSize, filter: ResizeFilter) -> 
     let options = FirResizeOptions::new()
         .resize_alg(ResizeAlg::Convolution(filter))
         .use_alpha(true);
+    let color_space = image.color_space;
 
     match image.data {
         WorkingData::U8(data) => {
             let src = Image::from_vec_u8(image.width, image.height, data, PixelType::U8x4)
-                .map_err(|err| Error::invalid(format!("invalid source buffer for resize: {err}")))?;
+                .map_err(|err| {
+                    Error::invalid(format!("invalid source buffer for resize: {err}"))
+                })?;
             let mut dst = Image::new(target.width, target.height, PixelType::U8x4);
 
             let mut resizer = Resizer::new();
@@ -109,6 +116,7 @@ pub fn resize(image: WorkingImage, target: TargetSize, filter: ResizeFilter) -> 
                 width: target.width,
                 height: target.height,
                 data: WorkingData::U8(dst.into_vec()),
+                color_space,
             })
         }
         WorkingData::U16(data) => {
@@ -130,6 +138,7 @@ pub fn resize(image: WorkingImage, target: TargetSize, filter: ResizeFilter) -> 
                 width: target.width,
                 height: target.height,
                 data: WorkingData::U16(bytes_to_u16(dst.into_vec())),
+                color_space,
             })
         }
     }

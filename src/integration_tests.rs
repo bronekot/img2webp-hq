@@ -1,5 +1,7 @@
 use std::fs::{self, File};
 use std::path::Path;
+use std::time::Instant;
+use std::{hint::black_box, path::PathBuf};
 
 use image::codecs::png::PngEncoder;
 use image::metadata::Orientation;
@@ -9,10 +11,12 @@ use tempfile::tempdir;
 use webpx::{get_exif, get_icc_profile};
 
 use crate::cli::{Job, Mode, ResizeOptions};
+use crate::cms::ResizeColorPipeline;
 use crate::decode::{self, WorkingData};
 use crate::error::Error;
 use crate::metadata::MetadataPolicy;
 use crate::pipeline;
+use crate::{sharpyuv, simpleyuv};
 
 fn base_job(input: &Path, output: &Path) -> Job {
     Job {
@@ -26,6 +30,7 @@ fn base_job(input: &Path, output: &Path) -> Job {
         filter_strength: None,
         exact: false,
         fast: false,
+        fast_hq: false,
         metadata: MetadataPolicy::Icc,
         resize: ResizeOptions {
             width: None,
@@ -263,6 +268,33 @@ fn fast_mode_decodes_and_processes_in_u8() {
 }
 
 #[test]
+fn fasthq_mode_keeps_high_bit_depth_pipeline() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("fasthq.png");
+    let output = dir.path().join("fasthq.webp");
+    let pixels = vec![
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+    ];
+
+    write_png_rgba(&input, 2, 2, &pixels, None, None);
+
+    let decoded_input = decode::decode(&input, false).unwrap();
+    assert!(matches!(decoded_input.image.data, WorkingData::U16(_)));
+
+    let mut job = base_job(&input, &output);
+    job.fast_hq = true;
+    job.mode = Mode::Lossy;
+    job.metadata = MetadataPolicy::None;
+    job.resize.width = Some(4);
+    job.resize.height = Some(4);
+
+    pipeline::run(job).unwrap();
+
+    let (width, height, _pixels, _icc, _exif) = read_webp(&output);
+    assert_eq!((width, height), (4, 4));
+}
+
+#[test]
 fn fast_mode_produces_comparable_output_to_normal() {
     let dir = tempdir().unwrap();
     let input = Path::new("test/1.jpeg");
@@ -294,8 +326,63 @@ fn fast_mode_produces_comparable_output_to_normal() {
         .max()
         .unwrap();
 
+    // Fast mode keeps linear-RGB chroma averaging, but intentionally skips
+    // SharpYUV's iterative fitting step to trade a small quality loss for speed.
     assert!(
-        max_diff <= 2,
+        max_diff <= 10,
         "Fast mode should match normal mode (max diff: {max_diff})"
     );
+}
+
+#[test]
+#[ignore]
+fn bench_simpleyuv_vs_sharpyuv_on_same_u8_input() {
+    let cases: [(PathBuf, usize); 2] = [
+        (PathBuf::from("test/1.jpeg"), 200),
+        (PathBuf::from("test/2.jpeg"), 20),
+    ];
+
+    for (path, iterations) in cases {
+        let decoded = decode::decode(&path, true).unwrap();
+        let cms = ResizeColorPipeline::new(decoded.metadata.icc.as_deref()).unwrap();
+        let data = match &decoded.image.data {
+            WorkingData::U8(data) => data,
+            WorkingData::U16(_) => panic!("expected u8 input in fast decode"),
+        };
+
+        for _ in 0..5 {
+            black_box(simpleyuv::rgba_to_yuv420(&decoded.image, &cms).unwrap());
+            black_box(
+                sharpyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height, false)
+                    .unwrap(),
+            );
+        }
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            black_box(simpleyuv::rgba_to_yuv420(&decoded.image, &cms).unwrap());
+        }
+        let simpleyuv_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            black_box(
+                sharpyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height, false)
+                    .unwrap(),
+            );
+        }
+        let sharpyuv_elapsed = start.elapsed();
+
+        let simpleyuv_ms = simpleyuv_elapsed.as_secs_f64() * 1000.0 / iterations as f64;
+        let sharpyuv_ms = sharpyuv_elapsed.as_secs_f64() * 1000.0 / iterations as f64;
+
+        eprintln!(
+            "{} iterations={} simpleyuv={:.3}ms sharpyuv={:.3}ms ratio={:.2}x",
+            path.display(),
+            iterations,
+            simpleyuv_ms,
+            sharpyuv_ms,
+            simpleyuv_ms / sharpyuv_ms,
+        );
+    }
 }

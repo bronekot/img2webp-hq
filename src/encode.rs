@@ -1,7 +1,8 @@
-use webpx::{embed_exif, embed_icc, embed_xmp, Encoder, EncoderConfig, Unstoppable, YuvPlanesRef};
+use webpx::{Encoder, EncoderConfig, Unstoppable, YuvPlanesRef, embed_exif, embed_icc, embed_xmp};
 
 use crate::cli::{Job, Mode};
-use crate::decode::{DecodedInput, WorkingData, WorkingImage};
+use crate::cms::ResizeColorPipeline;
+use crate::decode::{DecodedInput, WorkingColorSpace, WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 use crate::sharpyuv;
 use crate::simpleyuv;
@@ -15,23 +16,24 @@ pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
 }
 
 fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
-    let planes = if job.fast {
-        match &decoded.image.data {
-            WorkingData::U8(data) => {
-                simpleyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height)?
-            }
-            WorkingData::U16(data) => {
-                simpleyuv::rgba16_to_yuv420(data, decoded.image.width, decoded.image.height)?
-            }
-        }
+    let planes = if job.uses_simpleyuv() {
+        let cms = ResizeColorPipeline::new(decoded.metadata.icc.as_deref())?;
+        simpleyuv::rgba_to_yuv420(&decoded.image, &cms)?
     } else {
+        let assume_linear = decoded.image.color_space == WorkingColorSpace::LinearRgb;
         match &decoded.image.data {
-            WorkingData::U8(data) => {
-                sharpyuv::rgba8_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
-            }
-            WorkingData::U16(data) => {
-                sharpyuv::rgba16_to_yuv420(data, decoded.image.width, decoded.image.height, false)?
-            }
+            WorkingData::U8(data) => sharpyuv::rgba8_to_yuv420(
+                data,
+                decoded.image.width,
+                decoded.image.height,
+                assume_linear,
+            )?,
+            WorkingData::U16(data) => sharpyuv::rgba16_to_yuv420(
+                data,
+                decoded.image.width,
+                decoded.image.height,
+                assume_linear,
+            )?,
         }
     };
 
@@ -39,7 +41,7 @@ fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
         .quality(job.quality)
         .method(job.method)
         .alpha_quality(job.alpha_quality)
-        .sharp_yuv(!job.fast)
+        .sharp_yuv(!job.uses_simpleyuv())
         .exact(job.exact);
 
     let webp = Encoder::new_yuv(YuvPlanesRef::from(&planes))
