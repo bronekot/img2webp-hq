@@ -18,11 +18,18 @@ pub enum WorkingData {
     U16(Vec<u16>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkingColorSpace {
+    Source,
+    LinearRgb,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkingImage {
     pub width: u32,
     pub height: u32,
     pub data: WorkingData,
+    pub color_space: WorkingColorSpace,
 }
 
 #[derive(Debug, Clone)]
@@ -37,10 +44,14 @@ impl WorkingImage {
             return Ok(self);
         }
 
+        let color_space = self.color_space;
         match self.data {
             WorkingData::U8(data) => {
-                let buffer = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(self.width, self.height, data)
-                    .ok_or_else(|| Error::decode("failed to build RGBA8 image for orientation"))?;
+                let buffer =
+                    ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(self.width, self.height, data)
+                        .ok_or_else(|| {
+                            Error::decode("failed to build RGBA8 image for orientation")
+                        })?;
                 let mut dynamic = DynamicImage::ImageRgba8(buffer);
                 dynamic.apply_orientation(orientation);
                 let rotated = dynamic.into_rgba8();
@@ -48,6 +59,7 @@ impl WorkingImage {
                     width: rotated.width(),
                     height: rotated.height(),
                     data: WorkingData::U8(rotated.into_raw()),
+                    color_space,
                 })
             }
             WorkingData::U16(data) => {
@@ -63,6 +75,7 @@ impl WorkingImage {
                     width: rotated.width(),
                     height: rotated.height(),
                     data: WorkingData::U16(rotated.into_raw()),
+                    color_space,
                 })
             }
         }
@@ -166,6 +179,7 @@ fn working_image_from_jpeg_u8(decoded: DecodedImage) -> Result<WorkingImage> {
         width: decoded.width,
         height: decoded.height,
         data: WorkingData::U8(samples),
+        color_space: WorkingColorSpace::Source,
     })
 }
 
@@ -180,6 +194,7 @@ fn working_image_from_jpeg_u16(decoded: DecodedImage16) -> Result<WorkingImage> 
         width: decoded.width,
         height: decoded.height,
         data: WorkingData::U16(samples),
+        color_space: WorkingColorSpace::Source,
     })
 }
 
@@ -222,6 +237,7 @@ fn convert_decoded_to_rgba8(
         width,
         height,
         data: WorkingData::U8(data),
+        color_space: WorkingColorSpace::Source,
     })
 }
 
@@ -251,6 +267,7 @@ fn convert_decoded_to_rgba16(
         width,
         height,
         data: WorkingData::U16(data),
+        color_space: WorkingColorSpace::Source,
     })
 }
 
@@ -360,7 +377,12 @@ fn rgb16_bytes_to_rgba8(raw: &[u8]) -> Vec<u8> {
     let values = bytes_to_u16(raw);
     let mut out = Vec::with_capacity(values.len() / 3 * 4);
     for pixel in values.chunks_exact(3) {
-        out.extend_from_slice(&[down16(pixel[0]), down16(pixel[1]), down16(pixel[2]), u8::MAX]);
+        out.extend_from_slice(&[
+            down16(pixel[0]),
+            down16(pixel[1]),
+            down16(pixel[2]),
+            u8::MAX,
+        ]);
     }
     out
 }

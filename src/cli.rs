@@ -64,6 +64,9 @@ struct Cli {
     #[arg(long = "fast", action = clap::ArgAction::SetTrue)]
     fast: bool,
 
+    #[arg(long = "fasthq", alias = "fast-hq", action = clap::ArgAction::SetTrue)]
+    fast_hq: bool,
+
     #[arg(long = "metadata", value_enum, default_value_t = MetadataArg::Icc)]
     metadata: MetadataArg,
 
@@ -126,8 +129,19 @@ pub struct Job {
     pub filter_strength: Option<u8>,
     pub exact: bool,
     pub fast: bool,
+    pub fast_hq: bool,
     pub metadata: MetadataPolicy,
     pub resize: ResizeOptions,
+}
+
+impl Job {
+    pub fn uses_simpleyuv(&self) -> bool {
+        self.fast || self.fast_hq
+    }
+
+    pub fn uses_fast_decode(&self) -> bool {
+        self.fast
+    }
 }
 
 pub fn parse_from_env() -> Result<Job> {
@@ -140,6 +154,11 @@ fn validate(cli: Cli) -> Result<Job> {
     if cli.lossless && cli.near_lossless.is_some() {
         return Err(Error::invalid(
             "`-lossless` and `-near_lossless` cannot be used together",
+        ));
+    }
+    if cli.fast && cli.fast_hq {
+        return Err(Error::invalid(
+            "`--fast` and `--fasthq` cannot be used together",
         ));
     }
     if (cli.width.is_some() || cli.height.is_some())
@@ -229,6 +248,7 @@ fn return_job(
         filter_strength: cli.filter_strength,
         exact: cli.exact,
         fast: cli.fast,
+        fast_hq: cli.fast_hq,
         metadata,
         resize: ResizeOptions {
             width: cli.width,
@@ -250,6 +270,7 @@ fn normalize_cwebp_style_args(args: impl IntoIterator<Item = OsString>) -> Vec<O
         "near_lossless",
         "exact",
         "fast",
+        "fasthq",
         "metadata",
     ];
 
@@ -285,6 +306,7 @@ mod tests {
             OsString::from("icc"),
             OsString::from("-lossless"),
             OsString::from("-fast"),
+            OsString::from("-fasthq"),
         ]);
         let values: Vec<_> = args
             .into_iter()
@@ -293,6 +315,7 @@ mod tests {
         assert_eq!(values[1], "--metadata");
         assert_eq!(values[3], "--lossless");
         assert_eq!(values[4], "--fast");
+        assert_eq!(values[5], "--fasthq");
     }
 
     #[test]
@@ -310,6 +333,7 @@ mod tests {
             near_lossless: None,
             exact: false,
             fast: false,
+            fast_hq: false,
             metadata: MetadataArg::Icc,
             width: Some(1200),
             height: None,
@@ -324,6 +348,39 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "`--max-side` cannot be combined with other resize size flags"
+        );
+    }
+
+    #[test]
+    fn rejects_fast_and_fasthq_together() {
+        let err = validate(Cli {
+            input: PathBuf::from("in.png"),
+            output: PathBuf::from("out.webp"),
+            quality: 75.0,
+            alpha_quality: 100,
+            method: 4,
+            sns_strength: None,
+            filter_strength: None,
+            sharp_yuv: false,
+            lossless: false,
+            near_lossless: None,
+            exact: false,
+            fast: true,
+            fast_hq: true,
+            metadata: MetadataArg::Icc,
+            width: None,
+            height: None,
+            max_width: None,
+            max_height: None,
+            max_side: None,
+            no_upscale: false,
+            resize_filter: None,
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "`--fast` and `--fasthq` cannot be used together"
         );
     }
 }

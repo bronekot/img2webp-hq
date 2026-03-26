@@ -4,12 +4,20 @@ use lcms2::{
     Transform, XYZ2xyY,
 };
 
+use crate::decode::WorkingColorSpace;
 use crate::decode::{WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 
 pub struct ResizeColorPipeline {
     source_profile: Profile,
     linear_profile: Profile,
+}
+
+pub struct SimpleYuvTables {
+    pub source_u8_to_linear: [Vec<u16>; 3],
+    pub linear_to_source_u8: [Vec<u16>; 3],
+    pub source_u16_to_linear: [Vec<u16>; 3],
+    pub linear_to_source_u16: [Vec<u16>; 3],
 }
 
 pub fn validate_source_profile(icc: Option<&[u8]>, require_matrix_shaper: bool) -> Result<()> {
@@ -19,7 +27,7 @@ pub fn validate_source_profile(icc: Option<&[u8]>, require_matrix_shaper: bool) 
 
     if require_matrix_shaper && !source_profile.is_matrix_shaper() {
         return Err(Error::unsupported(
-            "only matrix-shaper RGB ICC profiles are supported for resize in v1",
+            "only matrix-shaper RGB ICC profiles are supported for the linear RGB pipeline in v1",
         ));
     }
 
@@ -31,7 +39,7 @@ impl ResizeColorPipeline {
         let source_profile = load_source_profile(icc)?.unwrap_or_else(Profile::new_srgb);
         if !source_profile.is_matrix_shaper() {
             return Err(Error::unsupported(
-                "only matrix-shaper RGB ICC profiles are supported for resize in v1",
+                "only matrix-shaper RGB ICC profiles are supported for the linear RGB pipeline in v1",
             ));
         }
 
@@ -43,7 +51,72 @@ impl ResizeColorPipeline {
         })
     }
 
+    pub fn simpleyuv_tables(&self) -> Result<SimpleYuvTables> {
+        Ok(SimpleYuvTables {
+            source_u8_to_linear: [
+                build_source_to_linear_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::RedTRCTag)?,
+                    10,
+                ),
+                build_source_to_linear_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::GreenTRCTag)?,
+                    10,
+                ),
+                build_source_to_linear_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::BlueTRCTag)?,
+                    10,
+                ),
+            ],
+            linear_to_source_u8: [
+                build_linear_to_source_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::RedTRCTag)?,
+                    10,
+                ),
+                build_linear_to_source_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::GreenTRCTag)?,
+                    10,
+                ),
+                build_linear_to_source_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::BlueTRCTag)?,
+                    10,
+                ),
+            ],
+            source_u16_to_linear: [
+                build_source_to_linear_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::RedTRCTag)?,
+                    14,
+                ),
+                build_source_to_linear_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::GreenTRCTag)?,
+                    14,
+                ),
+                build_source_to_linear_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::BlueTRCTag)?,
+                    14,
+                ),
+            ],
+            linear_to_source_u16: [
+                build_linear_to_source_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::RedTRCTag)?,
+                    14,
+                ),
+                build_linear_to_source_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::GreenTRCTag)?,
+                    14,
+                ),
+                build_linear_to_source_lut(
+                    read_tone_curve(&self.source_profile, TagSignature::BlueTRCTag)?,
+                    14,
+                ),
+            ],
+        })
+    }
+
     pub fn to_linear_in_place(&self, image: &mut WorkingImage) -> Result<()> {
+        if image.color_space == WorkingColorSpace::LinearRgb {
+            return Ok(());
+        }
+
         match &mut image.data {
             WorkingData::U8(rgba8) => {
                 let transform = Transform::<[u8; 4], [u8; 4]>::new_flags(
@@ -59,7 +132,6 @@ impl ResizeColorPipeline {
                 })?;
                 let pixels = cast_slice_mut::<u8, [u8; 4]>(rgba8);
                 transform.transform_in_place(pixels);
-                Ok(())
             }
             WorkingData::U16(rgba16) => {
                 let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
@@ -75,12 +147,18 @@ impl ResizeColorPipeline {
                 })?;
                 let pixels = cast_slice_mut::<u16, [u16; 4]>(rgba16);
                 transform.transform_in_place(pixels);
-                Ok(())
             }
         }
+
+        image.color_space = WorkingColorSpace::LinearRgb;
+        Ok(())
     }
 
     pub fn from_linear_in_place(&self, image: &mut WorkingImage) -> Result<()> {
+        if image.color_space == WorkingColorSpace::Source {
+            return Ok(());
+        }
+
         match &mut image.data {
             WorkingData::U8(rgba8) => {
                 let transform = Transform::<[u8; 4], [u8; 4]>::new_flags(
@@ -96,7 +174,6 @@ impl ResizeColorPipeline {
                 })?;
                 let pixels = cast_slice_mut::<u8, [u8; 4]>(rgba8);
                 transform.transform_in_place(pixels);
-                Ok(())
             }
             WorkingData::U16(rgba16) => {
                 let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
@@ -112,9 +189,11 @@ impl ResizeColorPipeline {
                 })?;
                 let pixels = cast_slice_mut::<u16, [u16; 4]>(rgba16);
                 transform.transform_in_place(pixels);
-                Ok(())
             }
         }
+
+        image.color_space = WorkingColorSpace::Source;
+        Ok(())
     }
 }
 
@@ -139,7 +218,7 @@ fn make_linear_profile(source_profile: &Profile) -> Result<Profile> {
         Tag::CIEXYZ(xyz) => XYZ2xyY(xyz),
         _ => {
             return Err(Error::color(
-                "ICC profile is missing MediaWhitePointTag for RGB resize pipeline",
+                "ICC profile is missing MediaWhitePointTag for the linear RGB pipeline",
             ));
         }
     };
@@ -166,4 +245,34 @@ fn make_linear_profile(source_profile: &Profile) -> Result<Profile> {
     let linear = ToneCurve::new(1.0);
     Profile::new_rgb(&white_point, &primaries, &[&linear, &linear, &linear])
         .map_err(|err| Error::color(format!("failed to build linear RGB profile: {err}")))
+}
+
+fn read_tone_curve<'a>(profile: &'a Profile, tag: TagSignature) -> Result<&'a lcms2::ToneCurveRef> {
+    match profile.read_tag(tag) {
+        Tag::ToneCurve(curve) => Ok(curve),
+        _ => Err(Error::color(format!("ICC profile is missing {tag:?}"))),
+    }
+}
+
+fn build_source_to_linear_lut(curve: &lcms2::ToneCurveRef, internal_bit_depth: u8) -> Vec<u16> {
+    let max = (1u32 << internal_bit_depth) - 1;
+    (0..=max)
+        .map(|code| curve.eval(scale_code_to_u16(code, max)))
+        .collect()
+}
+
+fn build_linear_to_source_lut(curve: &lcms2::ToneCurveRef, internal_bit_depth: u8) -> Vec<u16> {
+    let inverse = curve.reversed_samples(65_536);
+    let max = (1u32 << internal_bit_depth) - 1;
+    (0..=u16::MAX)
+        .map(|linear| scale_code_from_u16(inverse.eval(linear), max))
+        .collect()
+}
+
+fn scale_code_to_u16(value: u32, max: u32) -> u16 {
+    ((value * u16::MAX as u32 + max / 2) / max) as u16
+}
+
+fn scale_code_from_u16(value: u16, max: u32) -> u16 {
+    ((value as u32 * max + (u16::MAX as u32 / 2)) / u16::MAX as u32) as u16
 }
