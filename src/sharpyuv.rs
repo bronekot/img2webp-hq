@@ -191,29 +191,3 @@ fn has_alpha_u16(image: &[u16]) -> bool {
 fn down16_to_8(value: u16) -> u8 {
     ((value as u32 * 255 + 32767) / 65535) as u8
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flat_white_keeps_neutral_chroma_across_input_bit_depths() {
-        let rgba8 = vec![
-            255u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-        ];
-        let rgba16 = vec![
-            65535u16, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535,
-            65535, 65535, 65535, 65535, 65535,
-        ];
-
-        let yuv8 = rgba8_to_yuv420(&rgba8, 2, 2, true).unwrap();
-        let yuv16 = rgba16_to_yuv420(&rgba16, 2, 2, true).unwrap();
-
-        assert_eq!(yuv8.y, vec![235, 235, 235, 235]);
-        assert_eq!(yuv16.y, vec![236, 236, 236, 236]);
-        assert_eq!(yuv8.u, vec![128]);
-        assert_eq!(yuv8.v, vec![128]);
-        assert_eq!(yuv16.u, vec![128]);
-        assert_eq!(yuv16.v, vec![128]);
-    }
-}

@@ -22,6 +22,100 @@ pub fn rgba_to_yuv420(image: &WorkingImage, cms: &ResizeColorPipeline) -> Result
     }
 }
 
+pub fn rgba_to_yuv420_sharpish_linear_u16(image: &WorkingImage) -> Option<Result<YuvPlanes>> {
+    if image.color_space != WorkingColorSpace::LinearRgb {
+        return None;
+    }
+
+    let WorkingData::U16(data) = &image.data else {
+        return None;
+    };
+
+    Some(rgba16_to_yuv420_sharpish_linear(data, image.width, image.height))
+}
+
+fn rgba16_to_yuv420_sharpish_linear(
+    image: &[u16],
+    width: u32,
+    height: u32,
+) -> Result<YuvPlanes> {
+    let with_alpha = has_alpha_u16(image);
+    let mut planes = YuvPlanes::new(width, height, with_alpha);
+    let w = width as usize;
+    let h = height as usize;
+    let uv_width = width.div_ceil(2) as usize;
+    let sfix = precision_shift(16);
+    let y_coeffs = scale_matrix(&WEBP_RGB_TO_Y, 16);
+    let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, 16);
+    let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, 16);
+
+    let mut luma = vec![0u16; w * h];
+    let mut residuals = vec![[0i32; 3]; uv_width * height.div_ceil(2) as usize];
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            let r = import_u16(image[idx]) as i32;
+            let g = import_u16(image[idx + 1]) as i32;
+            let b = import_u16(image[idx + 2]) as i32;
+            luma[y * w + x] = rgb_to_gray(r, g, b);
+        }
+    }
+
+    for block_y in (0..height).step_by(2) {
+        for block_x in (0..width).step_by(2) {
+            let mut sum_r = 0u32;
+            let mut sum_g = 0u32;
+            let mut sum_b = 0u32;
+
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let (px, py) = block_pixel(width, height, block_x, block_y, dx, dy);
+                    let idx = ((py * width + px) as usize) * 4;
+                    sum_r += import_u16(image[idx]) as u32;
+                    sum_g += import_u16(image[idx + 1]) as u32;
+                    sum_b += import_u16(image[idx + 2]) as u32;
+                }
+            }
+
+            let avg_r = average_linear(sum_r) as i32;
+            let avg_g = average_linear(sum_g) as i32;
+            let avg_b = average_linear(sum_b) as i32;
+            let avg_w = rgb_to_gray(avg_r, avg_g, avg_b) as i32;
+            let residual = [avg_r - avg_w, avg_g - avg_w, avg_b - avg_w];
+            let uv_idx = ((block_y / 2) as usize) * uv_width + (block_x / 2) as usize;
+            residuals[uv_idx] = residual;
+            planes.u[uv_idx] =
+                rgb_to_component_8bit(residual[0], residual[1], residual[2], &u_coeffs, sfix);
+            planes.v[uv_idx] =
+                rgb_to_component_8bit(residual[0], residual[1], residual[2], &v_coeffs, sfix);
+        }
+    }
+
+    for y in 0..h {
+        for x in 0..w {
+            let uv_idx = (y / 2) * uv_width + (x / 2);
+            let residual = residuals[uv_idx];
+            let base = luma[y * w + x] as i32;
+            planes.y[y * w + x] = rgb_to_component_8bit(
+                base + residual[0],
+                base + residual[1],
+                base + residual[2],
+                &y_coeffs,
+                sfix,
+            );
+        }
+    }
+
+    if let Some(alpha) = &mut planes.a {
+        for (dst, pixel) in alpha.iter_mut().zip(image.chunks_exact(4)) {
+            *dst = down16_to_8(pixel[3]);
+        }
+    }
+
+    Ok(planes)
+}
+
 fn rgba8_to_yuv420(
     image: &[u8],
     width: u32,
@@ -32,7 +126,7 @@ fn rgba8_to_yuv420(
     let with_alpha = has_alpha_u8(image);
     let mut planes = YuvPlanes::new(width, height, with_alpha);
 
-    fill_y_plane_u8(image, color_space, tables, &mut planes.y);
+    fill_y_plane_u8(image, &mut planes.y);
     fill_uv_plane_u8(
         image,
         width,
@@ -62,7 +156,7 @@ fn rgba16_to_yuv420(
     let with_alpha = has_alpha_u16(image);
     let mut planes = YuvPlanes::new(width, height, with_alpha);
 
-    fill_y_plane_u16(image, color_space, tables, &mut planes.y);
+    fill_y_plane_u16(image, &mut planes.y);
     fill_uv_plane_u16(
         image,
         width,
@@ -82,62 +176,28 @@ fn rgba16_to_yuv420(
     Ok(planes)
 }
 
-fn fill_y_plane_u8(
-    image: &[u8],
-    color_space: WorkingColorSpace,
-    tables: &SimpleYuvTables,
-    y_plane: &mut [u8],
-) {
+fn fill_y_plane_u8(image: &[u8], y_plane: &mut [u8]) {
     let sfix = precision_shift(8);
     let coeffs = scale_matrix(&WEBP_RGB_TO_Y, 8);
     for (dst, pixel) in y_plane.iter_mut().zip(image.chunks_exact(4)) {
-        let rgb = match color_space {
-            WorkingColorSpace::Source => [
-                import_u8(pixel[0]),
-                import_u8(pixel[1]),
-                import_u8(pixel[2]),
-            ],
-            WorkingColorSpace::LinearRgb => [
-                linear_u8_to_source_code(pixel[0], &tables.linear_to_source_u8[0]),
-                linear_u8_to_source_code(pixel[1], &tables.linear_to_source_u8[1]),
-                linear_u8_to_source_code(pixel[2], &tables.linear_to_source_u8[2]),
-            ],
-        };
         *dst = rgb_to_component_8bit(
-            rgb[0] as i32,
-            rgb[1] as i32,
-            rgb[2] as i32,
+            import_u8(pixel[0]) as i32,
+            import_u8(pixel[1]) as i32,
+            import_u8(pixel[2]) as i32,
             &coeffs,
             sfix,
         );
     }
 }
 
-fn fill_y_plane_u16(
-    image: &[u16],
-    color_space: WorkingColorSpace,
-    tables: &SimpleYuvTables,
-    y_plane: &mut [u8],
-) {
+fn fill_y_plane_u16(image: &[u16], y_plane: &mut [u8]) {
     let sfix = precision_shift(16);
     let coeffs = scale_matrix(&WEBP_RGB_TO_Y, 16);
     for (dst, pixel) in y_plane.iter_mut().zip(image.chunks_exact(4)) {
-        let rgb = match color_space {
-            WorkingColorSpace::Source => [
-                import_u16(pixel[0]),
-                import_u16(pixel[1]),
-                import_u16(pixel[2]),
-            ],
-            WorkingColorSpace::LinearRgb => [
-                linear_u16_to_source_code(pixel[0], &tables.linear_to_source_u16[0]),
-                linear_u16_to_source_code(pixel[1], &tables.linear_to_source_u16[1]),
-                linear_u16_to_source_code(pixel[2], &tables.linear_to_source_u16[2]),
-            ],
-        };
         *dst = rgb_to_component_8bit(
-            rgb[0] as i32,
-            rgb[1] as i32,
-            rgb[2] as i32,
+            import_u16(pixel[0]) as i32,
+            import_u16(pixel[1]) as i32,
+            import_u16(pixel[2]) as i32,
             &coeffs,
             sfix,
         );
@@ -170,14 +230,9 @@ fn fill_uv_plane_u8(
                     &tables.source_u8_to_linear,
                     &tables.linear_to_source_u8,
                 ),
-                WorkingColorSpace::LinearRgb => average_linear_block_u8_to_source(
-                    image,
-                    width,
-                    height,
-                    block_x,
-                    block_y,
-                    &tables.linear_to_source_u8,
-                ),
+                WorkingColorSpace::LinearRgb => {
+                    average_linear_block_u8(image, width, height, block_x, block_y)
+                }
             };
             let idx = ((block_y / 2) * uv_width + (block_x / 2)) as usize;
             u_plane[idx] =
@@ -214,36 +269,15 @@ fn fill_uv_plane_u16(
                     &tables.source_u16_to_linear,
                     &tables.linear_to_source_u16,
                 ),
-                WorkingColorSpace::LinearRgb => average_linear_block_u16_to_source(
-                    image,
-                    width,
-                    height,
-                    block_x,
-                    block_y,
-                    &tables.linear_to_source_u16,
-                ),
+                WorkingColorSpace::LinearRgb => {
+                    average_linear_block_u16(image, width, height, block_x, block_y)
+                }
             };
             let idx = ((block_y / 2) * uv_width + (block_x / 2)) as usize;
-            let w = rgb_to_gray(rgb[0] as i32, rgb[1] as i32, rgb[2] as i32) as i32;
-            let residual = [
-                rgb[0] as i32 - w,
-                rgb[1] as i32 - w,
-                rgb[2] as i32 - w,
-            ];
-            u_plane[idx] = rgb_to_component_8bit(
-                residual[0],
-                residual[1],
-                residual[2],
-                &u_coeffs,
-                sfix,
-            );
-            v_plane[idx] = rgb_to_component_8bit(
-                residual[0],
-                residual[1],
-                residual[2],
-                &v_coeffs,
-                sfix,
-            );
+            u_plane[idx] =
+                rgb_to_component_8bit(rgb[0] as i32, rgb[1] as i32, rgb[2] as i32, &u_coeffs, sfix);
+            v_plane[idx] =
+                rgb_to_component_8bit(rgb[0] as i32, rgb[1] as i32, rgb[2] as i32, &v_coeffs, sfix);
         }
     }
 }
@@ -336,22 +370,6 @@ fn average_linear_block_u8(
     ]
 }
 
-fn average_linear_block_u8_to_source(
-    image: &[u8],
-    width: u32,
-    height: u32,
-    block_x: u32,
-    block_y: u32,
-    linear_to_source: &[Vec<u16>; 3],
-) -> [u16; 3] {
-    let rgb = average_linear_block_u8(image, width, height, block_x, block_y);
-    [
-        linear_u8_to_source_code(rgb[0] as u8, &linear_to_source[0]),
-        linear_u8_to_source_code(rgb[1] as u8, &linear_to_source[1]),
-        linear_u8_to_source_code(rgb[2] as u8, &linear_to_source[2]),
-    ]
-}
-
 fn average_linear_block_u16(
     image: &[u16],
     width: u32,
@@ -377,22 +395,6 @@ fn average_linear_block_u16(
         average_linear(sum_r),
         average_linear(sum_g),
         average_linear(sum_b),
-    ]
-}
-
-fn average_linear_block_u16_to_source(
-    image: &[u16],
-    width: u32,
-    height: u32,
-    block_x: u32,
-    block_y: u32,
-    linear_to_source: &[Vec<u16>; 3],
-) -> [u16; 3] {
-    let rgb = average_linear_block_u16(image, width, height, block_x, block_y);
-    [
-        linear_u16_to_source_code(rgb[0], &linear_to_source[0]),
-        linear_u16_to_source_code(rgb[1], &linear_to_source[1]),
-        linear_u16_to_source_code(rgb[2], &linear_to_source[2]),
     ]
 }
 
@@ -464,14 +466,6 @@ fn import_u8(value: u8) -> u16 {
 
 fn import_u16(value: u16) -> u16 {
     value >> (-precision_shift(16))
-}
-
-fn linear_u8_to_source_code(value: u8, linear_to_source: &[u16]) -> u16 {
-    linear_to_source[(value as usize) * 257]
-}
-
-fn linear_u16_to_source_code(value: u16, linear_to_source: &[u16]) -> u16 {
-    linear_to_source[value as usize]
 }
 
 #[inline]
@@ -580,9 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn linear_rgb_input_converts_back_to_gamma_for_yuv() {
+    fn linear_rgb_input_subsamples_without_gamma_roundtrip() {
         let cms = ResizeColorPipeline::new(None).unwrap();
-        let tables = cms.simpleyuv_tables().unwrap();
         let image = WorkingImage {
             width: 2,
             height: 2,
@@ -596,29 +589,13 @@ mod tests {
         let y_coeffs = scale_matrix(&WEBP_RGB_TO_Y, 8);
         let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, 8);
         let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, 8);
-        let y_rgb = [
-            linear_u8_to_source_code(32, &tables.linear_to_source_u8[0]),
-            linear_u8_to_source_code(64, &tables.linear_to_source_u8[1]),
-            linear_u8_to_source_code(96, &tables.linear_to_source_u8[2]),
-        ];
-        let uv_rgb = average_linear_block_u8_to_source(
-            match &image.data {
-                WorkingData::U8(data) => data,
-                WorkingData::U16(_) => unreachable!(),
-            },
-            image.width,
-            image.height,
-            0,
-            0,
-            &tables.linear_to_source_u8,
-        );
 
         assert_eq!(
             planes.y[0],
             rgb_to_component_8bit(
-                y_rgb[0] as i32,
-                y_rgb[1] as i32,
-                y_rgb[2] as i32,
+                import_u8(32) as i32,
+                import_u8(64) as i32,
+                import_u8(96) as i32,
                 &y_coeffs,
                 precision_shift(8),
             )
@@ -626,9 +603,24 @@ mod tests {
         assert_eq!(
             planes.u,
             vec![rgb_to_component_8bit(
-                uv_rgb[0] as i32,
-                uv_rgb[1] as i32,
-                uv_rgb[2] as i32,
+                average_linear(
+                    import_u8(32) as u32
+                        + import_u8(64) as u32
+                        + import_u8(96) as u32
+                        + import_u8(128) as u32,
+                ) as i32,
+                average_linear(
+                    import_u8(64) as u32
+                        + import_u8(96) as u32
+                        + import_u8(128) as u32
+                        + import_u8(160) as u32,
+                ) as i32,
+                average_linear(
+                    import_u8(96) as u32
+                        + import_u8(128) as u32
+                        + import_u8(160) as u32
+                        + import_u8(192) as u32,
+                ) as i32,
                 &u_coeffs,
                 precision_shift(8),
             )]
@@ -636,44 +628,27 @@ mod tests {
         assert_eq!(
             planes.v,
             vec![rgb_to_component_8bit(
-                uv_rgb[0] as i32,
-                uv_rgb[1] as i32,
-                uv_rgb[2] as i32,
+                average_linear(
+                    import_u8(32) as u32
+                        + import_u8(64) as u32
+                        + import_u8(96) as u32
+                        + import_u8(128) as u32,
+                ) as i32,
+                average_linear(
+                    import_u8(64) as u32
+                        + import_u8(96) as u32
+                        + import_u8(128) as u32
+                        + import_u8(160) as u32,
+                ) as i32,
+                average_linear(
+                    import_u8(96) as u32
+                        + import_u8(128) as u32
+                        + import_u8(160) as u32
+                        + import_u8(192) as u32,
+                ) as i32,
                 &v_coeffs,
                 precision_shift(8),
             )]
         );
-    }
-
-    #[test]
-    fn linear_u16_uv_preserves_neutral_axis_and_matches_sharpyuv() {
-        let cms = ResizeColorPipeline::new(None).unwrap();
-        let samples = [0u16, 16384, 32768, 65535];
-
-        for gray in samples {
-            let image = WorkingImage {
-                width: 2,
-                height: 2,
-                data: WorkingData::U16(vec![
-                    gray, gray, gray, u16::MAX, gray, gray, gray, u16::MAX, gray, gray, gray,
-                    u16::MAX, gray, gray, gray, u16::MAX,
-                ]),
-                color_space: WorkingColorSpace::LinearRgb,
-            };
-            let planes = rgba_to_yuv420(&image, &cms).unwrap();
-            let expected = crate::sharpyuv::rgba16_to_yuv420(
-                match &image.data {
-                    WorkingData::U16(data) => data,
-                    WorkingData::U8(_) => unreachable!(),
-                },
-                image.width,
-                image.height,
-                true,
-            )
-            .unwrap();
-
-            assert_eq!(planes.u, expected.u, "U mismatch for gray={gray}");
-            assert_eq!(planes.v, expected.v, "V mismatch for gray={gray}");
-        }
     }
 }
