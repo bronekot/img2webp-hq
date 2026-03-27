@@ -5,6 +5,7 @@ use crate::decode::{WorkingColorSpace, WorkingData, WorkingImage};
 use crate::error::Result;
 
 const YUV_FIX: i32 = 16;
+const YUV_HALF: i64 = 1 << (YUV_FIX - 1);
 const WEBP_RGB_TO_Y: [i32; 4] = [16839, 33059, 6420, 16 << 16];
 const WEBP_RGB_TO_U: [i32; 4] = [-9719, -19081, 28800, 128 << 16];
 const WEBP_RGB_TO_V: [i32; 4] = [28800, -24116, -4684, 128 << 16];
@@ -19,6 +20,100 @@ pub fn rgba_to_yuv420(image: &WorkingImage, cms: &ResizeColorPipeline) -> Result
             rgba16_to_yuv420(data, image.width, image.height, image.color_space, &tables)
         }
     }
+}
+
+pub fn rgba_to_yuv420_sharpish_linear_u16(image: &WorkingImage) -> Option<Result<YuvPlanes>> {
+    if image.color_space != WorkingColorSpace::LinearRgb {
+        return None;
+    }
+
+    let WorkingData::U16(data) = &image.data else {
+        return None;
+    };
+
+    Some(rgba16_to_yuv420_sharpish_linear(data, image.width, image.height))
+}
+
+fn rgba16_to_yuv420_sharpish_linear(
+    image: &[u16],
+    width: u32,
+    height: u32,
+) -> Result<YuvPlanes> {
+    let with_alpha = has_alpha_u16(image);
+    let mut planes = YuvPlanes::new(width, height, with_alpha);
+    let w = width as usize;
+    let h = height as usize;
+    let uv_width = width.div_ceil(2) as usize;
+    let sfix = precision_shift(16);
+    let y_coeffs = scale_matrix(&WEBP_RGB_TO_Y, 16);
+    let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, 16);
+    let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, 16);
+
+    let mut luma = vec![0u16; w * h];
+    let mut residuals = vec![[0i32; 3]; uv_width * height.div_ceil(2) as usize];
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            let r = import_u16(image[idx]) as i32;
+            let g = import_u16(image[idx + 1]) as i32;
+            let b = import_u16(image[idx + 2]) as i32;
+            luma[y * w + x] = rgb_to_gray(r, g, b);
+        }
+    }
+
+    for block_y in (0..height).step_by(2) {
+        for block_x in (0..width).step_by(2) {
+            let mut sum_r = 0u32;
+            let mut sum_g = 0u32;
+            let mut sum_b = 0u32;
+
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let (px, py) = block_pixel(width, height, block_x, block_y, dx, dy);
+                    let idx = ((py * width + px) as usize) * 4;
+                    sum_r += import_u16(image[idx]) as u32;
+                    sum_g += import_u16(image[idx + 1]) as u32;
+                    sum_b += import_u16(image[idx + 2]) as u32;
+                }
+            }
+
+            let avg_r = average_linear(sum_r) as i32;
+            let avg_g = average_linear(sum_g) as i32;
+            let avg_b = average_linear(sum_b) as i32;
+            let avg_w = rgb_to_gray(avg_r, avg_g, avg_b) as i32;
+            let residual = [avg_r - avg_w, avg_g - avg_w, avg_b - avg_w];
+            let uv_idx = ((block_y / 2) as usize) * uv_width + (block_x / 2) as usize;
+            residuals[uv_idx] = residual;
+            planes.u[uv_idx] =
+                rgb_to_component_8bit(residual[0], residual[1], residual[2], &u_coeffs, sfix);
+            planes.v[uv_idx] =
+                rgb_to_component_8bit(residual[0], residual[1], residual[2], &v_coeffs, sfix);
+        }
+    }
+
+    for y in 0..h {
+        for x in 0..w {
+            let uv_idx = (y / 2) * uv_width + (x / 2);
+            let residual = residuals[uv_idx];
+            let base = luma[y * w + x] as i32;
+            planes.y[y * w + x] = rgb_to_component_8bit(
+                base + residual[0],
+                base + residual[1],
+                base + residual[2],
+                &y_coeffs,
+                sfix,
+            );
+        }
+    }
+
+    if let Some(alpha) = &mut planes.a {
+        for (dst, pixel) in alpha.iter_mut().zip(image.chunks_exact(4)) {
+            *dst = down16_to_8(pixel[3]);
+        }
+    }
+
+    Ok(planes)
 }
 
 fn rgba8_to_yuv420(
@@ -312,6 +407,11 @@ fn rgb_to_component_8bit(r: i32, g: i32, b: i32, coeffs: &[i32; 4], sfix: i32) -
         + coeffs[3] as i64
         + rounder;
     (value >> shift).clamp(0, 255) as u8
+}
+
+fn rgb_to_gray(r: i32, g: i32, b: i32) -> u16 {
+    ((13933i64 * r as i64 + 46871i64 * g as i64 + 4732i64 * b as i64 + YUV_HALF) >> YUV_FIX)
+        as u16
 }
 
 fn block_pixel(
