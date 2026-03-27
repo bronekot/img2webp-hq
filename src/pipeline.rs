@@ -25,9 +25,7 @@ pub fn run(job: Job) -> Result<()> {
             job.resize.filter,
         );
         decoded.image = resize::resize(decoded.image, target, filter)?;
-        if !matches!(job.mode, Mode::Lossy) {
-            cms.from_linear_in_place(&mut decoded.image)?;
-        }
+        cms.from_linear_in_place(&mut decoded.image)?;
     }
 
     let webp = encode::encode(&job, &decoded)?;
