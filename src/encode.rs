@@ -18,15 +18,7 @@ pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
 fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
     let planes = if job.uses_simpleyuv() {
         let cms = ResizeColorPipeline::new(decoded.metadata.icc.as_deref())?;
-        if job.fast_hq {
-            if let Some(planes) = simpleyuv::rgba_to_yuv420_sharpish_linear_u16(&decoded.image) {
-                planes?
-            } else {
-                simpleyuv::rgba_to_yuv420(&decoded.image, &cms)?
-            }
-        } else {
-            simpleyuv::rgba_to_yuv420(&decoded.image, &cms)?
-        }
+        simpleyuv::rgba_to_yuv420(&decoded.image, &cms)?
     } else {
         let assume_linear = decoded.image.color_space == WorkingColorSpace::LinearRgb;
         match &decoded.image.data {
