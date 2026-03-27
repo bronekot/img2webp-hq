@@ -31,14 +31,14 @@ pub fn rgba_to_yuv420_sharpish_linear_u16(image: &WorkingImage) -> Option<Result
         return None;
     };
 
-    Some(rgba16_to_yuv420_sharpish_linear(data, image.width, image.height))
+    Some(rgba16_to_yuv420_sharpish_linear(
+        data,
+        image.width,
+        image.height,
+    ))
 }
 
-fn rgba16_to_yuv420_sharpish_linear(
-    image: &[u16],
-    width: u32,
-    height: u32,
-) -> Result<YuvPlanes> {
+fn rgba16_to_yuv420_sharpish_linear(image: &[u16], width: u32, height: u32) -> Result<YuvPlanes> {
     let with_alpha = has_alpha_u16(image);
     let mut planes = YuvPlanes::new(width, height, with_alpha);
     let w = width as usize;
@@ -410,8 +410,7 @@ fn rgb_to_component_8bit(r: i32, g: i32, b: i32, coeffs: &[i32; 4], sfix: i32) -
 }
 
 fn rgb_to_gray(r: i32, g: i32, b: i32) -> u16 {
-    ((13933i64 * r as i64 + 46871i64 * g as i64 + 4732i64 * b as i64 + YUV_HALF) >> YUV_FIX)
-        as u16
+    ((13933i64 * r as i64 + 46871i64 * g as i64 + 4732i64 * b as i64 + YUV_HALF) >> YUV_FIX) as u16
 }
 
 fn block_pixel(
