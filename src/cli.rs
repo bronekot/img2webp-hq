@@ -49,8 +49,12 @@ struct Cli {
     #[arg(short = 'f')]
     filter_strength: Option<u8>,
 
-    #[arg(long = "sharp_yuv", action = clap::ArgAction::SetTrue)]
-    sharp_yuv: bool,
+    #[arg(
+        long = "sharpyuv",
+        alias = "sharp_yuv",
+        action = clap::ArgAction::SetTrue
+    )]
+    sharpyuv: bool,
 
     #[arg(long = "lossless", action = clap::ArgAction::SetTrue)]
     lossless: bool,
@@ -128,6 +132,7 @@ pub struct Job {
     pub sns_strength: Option<u8>,
     pub filter_strength: Option<u8>,
     pub exact: bool,
+    pub sharpyuv: bool,
     pub fast: bool,
     pub fast_hq: bool,
     pub metadata: MetadataPolicy,
@@ -136,7 +141,7 @@ pub struct Job {
 
 impl Job {
     pub fn uses_simpleyuv(&self) -> bool {
-        self.fast || self.fast_hq
+        !self.sharpyuv
     }
 
     pub fn uses_fast_decode(&self) -> bool {
@@ -247,6 +252,7 @@ fn return_job(
         sns_strength: cli.sns_strength,
         filter_strength: cli.filter_strength,
         exact: cli.exact,
+        sharpyuv: cli.sharpyuv,
         fast: cli.fast,
         fast_hq: cli.fast_hq,
         metadata,
@@ -265,6 +271,7 @@ fn return_job(
 fn normalize_cwebp_style_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     const REWRITE: &[&str] = &[
         "alpha_q",
+        "sharpyuv",
         "sharp_yuv",
         "lossless",
         "near_lossless",
@@ -304,6 +311,8 @@ mod tests {
             OsString::from("img2webp-hq"),
             OsString::from("-metadata"),
             OsString::from("icc"),
+            OsString::from("-sharpyuv"),
+            OsString::from("-sharp_yuv"),
             OsString::from("-lossless"),
             OsString::from("-fast"),
             OsString::from("-fasthq"),
@@ -313,9 +322,11 @@ mod tests {
             .map(|item| item.into_string().unwrap())
             .collect();
         assert_eq!(values[1], "--metadata");
-        assert_eq!(values[3], "--lossless");
-        assert_eq!(values[4], "--fast");
-        assert_eq!(values[5], "--fasthq");
+        assert_eq!(values[3], "--sharpyuv");
+        assert_eq!(values[4], "--sharp_yuv");
+        assert_eq!(values[5], "--lossless");
+        assert_eq!(values[6], "--fast");
+        assert_eq!(values[7], "--fasthq");
     }
 
     #[test]
@@ -328,7 +339,7 @@ mod tests {
             method: 4,
             sns_strength: None,
             filter_strength: None,
-            sharp_yuv: false,
+            sharpyuv: false,
             lossless: false,
             near_lossless: None,
             exact: false,
@@ -361,7 +372,7 @@ mod tests {
             method: 4,
             sns_strength: None,
             filter_strength: None,
-            sharp_yuv: false,
+            sharpyuv: false,
             lossless: false,
             near_lossless: None,
             exact: false,
@@ -382,5 +393,37 @@ mod tests {
             err.to_string(),
             "`--fast` and `--fasthq` cannot be used together"
         );
+    }
+
+    #[test]
+    fn sharpyuv_flag_switches_lossy_pipeline() {
+        let job = validate(Cli {
+            input: PathBuf::from("in.png"),
+            output: PathBuf::from("out.webp"),
+            quality: 75.0,
+            alpha_quality: 100,
+            method: 4,
+            sns_strength: None,
+            filter_strength: None,
+            sharpyuv: true,
+            lossless: false,
+            near_lossless: None,
+            exact: false,
+            fast: false,
+            fast_hq: false,
+            metadata: MetadataArg::Icc,
+            width: None,
+            height: None,
+            max_width: None,
+            max_height: None,
+            max_side: None,
+            no_upscale: false,
+            resize_filter: None,
+        })
+        .unwrap();
+
+        assert!(job.sharpyuv);
+        assert!(!job.uses_simpleyuv());
+        assert!(!job.uses_fast_decode());
     }
 }
