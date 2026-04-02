@@ -12,7 +12,7 @@ use webpx::{get_exif, get_icc_profile};
 
 use crate::cli::{Job, Mode, ResizeOptions};
 use crate::cms::ResizeColorPipeline;
-use crate::decode::{self, WorkingData};
+use crate::decode::{self, WorkingData, WorkingImage};
 use crate::error::Error;
 use crate::metadata::MetadataPolicy;
 use crate::pipeline;
@@ -29,6 +29,7 @@ fn base_job(input: &Path, output: &Path) -> Job {
         sns_strength: None,
         filter_strength: None,
         exact: false,
+        sharpyuv: false,
         fast: false,
         fast_hq: false,
         metadata: MetadataPolicy::Icc,
@@ -42,6 +43,24 @@ fn base_job(input: &Path, output: &Path) -> Job {
             filter: None,
         },
     }
+}
+
+fn expand_u8_to_u16(data: &[u8]) -> Vec<u16> {
+    data.iter().map(|&value| (value as u16) * 257).collect()
+}
+
+fn downcast_u16_to_u8(data: &[u16]) -> Vec<u8> {
+    data.iter()
+        .map(|&value| ((value as u32 + 128) / 257) as u8)
+        .collect()
+}
+
+fn max_abs_diff_u8(left: &[u8], right: &[u8]) -> i32 {
+    left.iter()
+        .zip(right)
+        .map(|(&l, &r)| (l as i32 - r as i32).abs())
+        .max()
+        .unwrap_or(0)
 }
 
 fn write_png_rgba(
@@ -174,6 +193,22 @@ fn all_modes_produce_decodable_webp_output() {
         assert!(icc.is_none(), "{name}");
         assert!(exif.is_none(), "{name}");
     }
+
+    let sharpyuv_output = dir.path().join("lossy-sharpyuv.webp");
+    let mut sharpyuv_job = base_job(&input, &sharpyuv_output);
+    sharpyuv_job.mode = Mode::Lossy;
+    sharpyuv_job.sharpyuv = true;
+    sharpyuv_job.metadata = MetadataPolicy::None;
+    sharpyuv_job.resize.width = Some(4);
+    sharpyuv_job.resize.height = Some(4);
+    sharpyuv_job.quality = 80.0;
+
+    pipeline::run(sharpyuv_job).unwrap();
+
+    let (width, height, _pixels, icc, exif) = read_webp(&sharpyuv_output);
+    assert_eq!((width, height), (4, 4), "lossy-sharpyuv");
+    assert!(icc.is_none(), "lossy-sharpyuv");
+    assert!(exif.is_none(), "lossy-sharpyuv");
 }
 
 #[test]
@@ -295,7 +330,7 @@ fn fasthq_mode_keeps_high_bit_depth_pipeline() {
 }
 
 #[test]
-fn fast_mode_produces_comparable_output_to_normal() {
+fn fast_mode_stays_close_to_default_simpleyuv_path() {
     let dir = tempdir().unwrap();
     let input = Path::new("test/1.jpeg");
     let normal_output = dir.path().join("normal.webp");
@@ -326,11 +361,11 @@ fn fast_mode_produces_comparable_output_to_normal() {
         .max()
         .unwrap();
 
-    // Fast mode keeps linear-RGB chroma averaging, but intentionally skips
-    // SharpYUV's iterative fitting step to trade a small quality loss for speed.
+    // Fast mode now uses the same SimpleYUV path as default lossy mode, but on
+    // top of an 8-bit decode path instead of the default high-bit-depth one.
     assert!(
         max_diff <= 10,
-        "Fast mode should match normal mode (max diff: {max_diff})"
+        "Fast mode should stay close to default SimpleYUV mode (max diff: {max_diff})"
     );
 }
 
@@ -370,6 +405,71 @@ fn fasthq_no_longer_produces_dark_output_after_resize() {
         avg_luma > 30.0,
         "Fast HQ output should not be dark after resize (avg_luma={avg_luma:.1})",
     );
+}
+
+#[test]
+fn jpeg_u8_and_u16_simpleyuv_paths_stay_aligned() {
+    for input in [Path::new("test/1.jpeg"), Path::new("test/2.jpeg")] {
+        let decoded_u8 = decode::decode(input, true).unwrap();
+        let decoded_u16 = decode::decode(input, false).unwrap();
+        let cms = ResizeColorPipeline::new(decoded_u8.metadata.icc.as_deref()).unwrap();
+
+        let data_u8 = match &decoded_u8.image.data {
+            WorkingData::U8(data) => data,
+            WorkingData::U16(_) => panic!("expected u8 decode"),
+        };
+        let data_u16 = match &decoded_u16.image.data {
+            WorkingData::U16(data) => data,
+            WorkingData::U8(_) => panic!("expected u16 decode"),
+        };
+
+        let expanded_u8 = expand_u8_to_u16(data_u8);
+        let downcast_u16 = downcast_u16_to_u8(data_u16);
+
+        let max_fast_vs_downcast = max_abs_diff_u8(data_u8, &downcast_u16);
+
+        let expanded_image = WorkingImage {
+            width: decoded_u8.image.width,
+            height: decoded_u8.image.height,
+            data: WorkingData::U16(expanded_u8),
+            color_space: decoded_u8.image.color_space,
+        };
+        let downcast_image = WorkingImage {
+            width: decoded_u16.image.width,
+            height: decoded_u16.image.height,
+            data: WorkingData::U8(downcast_u16),
+            color_space: decoded_u16.image.color_space,
+        };
+
+        let planes_u8 = simpleyuv::rgba_to_yuv420(&decoded_u8.image, &cms).unwrap();
+        let planes_expanded = simpleyuv::rgba_to_yuv420(&expanded_image, &cms).unwrap();
+        let planes_downcast = simpleyuv::rgba_to_yuv420(&downcast_image, &cms).unwrap();
+        let planes_u16 = simpleyuv::rgba_to_yuv420(&decoded_u16.image, &cms).unwrap();
+
+        assert!(
+            max_fast_vs_downcast <= 1,
+            "downcasted u16 decode should match u8 decode for {} (max diff {})",
+            input.display(),
+            max_fast_vs_downcast,
+        );
+        assert!(
+            max_abs_diff_u8(&planes_u8.y, &planes_expanded.y) <= 1
+                && max_abs_diff_u8(&planes_u8.u, &planes_expanded.u) <= 1
+                && max_abs_diff_u8(&planes_u8.v, &planes_expanded.v) <= 1,
+            "simpleyuv should keep u8 and equivalent u16 samples aligned for {}",
+            input.display(),
+        );
+        assert_eq!(max_abs_diff_u8(&planes_u8.y, &planes_downcast.y), 0);
+        assert_eq!(max_abs_diff_u8(&planes_u8.u, &planes_downcast.u), 0);
+        assert_eq!(max_abs_diff_u8(&planes_u8.v, &planes_downcast.v), 0);
+        assert!(
+            max_abs_diff_u8(&planes_u8.y, &planes_u16.y) <= 1
+                && max_abs_diff_u8(&planes_u8.u, &planes_u16.u) <= 1
+                && max_abs_diff_u8(&planes_u8.v, &planes_u16.v) <= 1,
+            "simpleyuv u16 path drifted too far from u8 path for {}",
+            input.display(),
+        );
+    }
 }
 
 #[test]

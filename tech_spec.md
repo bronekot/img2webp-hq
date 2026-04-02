@@ -100,7 +100,7 @@
 - expert-флаг `-fast` переключает пайплайн в `RGBA8` internal path;
 - resize выполняется только в linear-light;
 - alpha обрабатывается в premultiplied-представлении;
-- lossy path использует SharpYUV;
+- lossy path по умолчанию использует high-bit-depth `simpleyuv`;
 - финальная квантовка до 8 бит выполняется максимально поздно;
 - выходное изображение не принудительно переводится в `sRGB`, если вход уже
   находится в корректно описанном RGB-пространстве.
@@ -346,13 +346,14 @@ Lossy path должен выглядеть так:
 8. Unpremultiply alpha.
 9. Convert back from linear to gamma-coded source RGB.
 10. Выполнить финальную квантовку как можно позже.
-11. Выполнить `RGB -> YUV420` через SharpYUV.
+11. Выполнить `RGB -> YUV420` через выбранный lossy path
+    (`simpleyuv` по умолчанию, `SharpYUV` при `--sharpyuv`).
 12. Encode lossy WebP.
 13. Attach metadata according to CLI policy.
 
 Требования:
 
-- lossy path по умолчанию использует SharpYUV;
+- lossy path по умолчанию использует high-bit-depth `simpleyuv`;
 - ранний переход в `RGBA8` до этапа финальной подготовки цвета недопустим;
 - alpha quality должна управляться отдельно;
 - chroma conversion и subsampling должны происходить через качественный path.
@@ -486,7 +487,7 @@ high-quality pipeline.
 - `-m <0..6>`
 - `-sns <int>`
 - `-f <int>`
-- `-sharp_yuv`
+- `--sharpyuv` (alias: `--sharp_yuv`)
 - `-lossless`
 - `-near_lossless <int>`
 - `-exact`
@@ -499,8 +500,8 @@ high-quality pipeline.
 - `-lossless` и `-near_lossless` одновременно задавать нельзя;
 - `-near_lossless` активирует near-lossless mode;
 - `-fast` включает `8-bit` internal pipeline;
-- `-sharp_yuv` принимается для совместимости с `cwebp`, но в `v1` lossy path
-  использует SharpYUV всегда.
+- `--sharpyuv` включает lossy path через SharpYUV;
+- без `--sharpyuv` lossy path по умолчанию использует high-bit-depth `simpleyuv`.
 
 ### 12.4 Resize-флаги
 
@@ -588,7 +589,7 @@ Shell-вызовы `cwebp` допустимы только как временн
 - RGBA resize выполняется alpha-aware через
   `premultiply -> resize -> unpremultiply`;
 - вход не сводится к `RGBA8` в самом начале пайплайна;
-- lossy path использует SharpYUV по умолчанию;
+- lossy path по умолчанию использует high-bit-depth `simpleyuv`;
 - lossless и near-lossless path используют `ARGB8` encode path;
 - финальная квантовка до 8 бит происходит как можно позже;
 - ICC сохраняется, если это разрешено metadata policy и профиль всё ещё
@@ -618,7 +619,7 @@ Shell-вызовы `cwebp` допустимы только как временн
 
 - lossy WebP path через `libwebp`
 - SharpYUV integration
-- `-q`, `-m`, `-sns`, `-f`, `-alpha_q`, `-sharp_yuv`
+- `-q`, `-m`, `-sns`, `-f`, `-alpha_q`, `--sharpyuv` / `--sharp_yuv`
 
 ### Этап 3
 
@@ -636,7 +637,8 @@ Shell-вызовы `cwebp` допустимы только как временн
 - JPEG/PNG с non-sRGB RGB profile и resize без потери соответствия профилю;
 - EXIF orientation корректно нормализуется и не приводит к double-rotation;
 - PNG с полупрозрачными краями не даёт цветных ореолов после resize;
-- lossy path действительно использует SharpYUV;
+- lossy path по умолчанию действительно использует high-bit-depth `simpleyuv`;
+- `--sharpyuv` действительно переключает lossy path на SharpYUV;
 - `16-bit` вход не теряет точность раньше финальной квантовки;
 - `-lossless` и `-near_lossless` конфликтуют корректной ошибкой;
 - `--width/--height`, `--max-side` и `--max-width/--max-height` конфликтуют

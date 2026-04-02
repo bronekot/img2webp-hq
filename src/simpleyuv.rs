@@ -38,16 +38,21 @@ pub fn rgba_to_yuv420_sharpish_linear_u16(image: &WorkingImage) -> Option<Result
     ))
 }
 
+fn effective_u16_bit_depth() -> u8 {
+    (16i32 + precision_shift(16)) as u8
+}
+
 fn rgba16_to_yuv420_sharpish_linear(image: &[u16], width: u32, height: u32) -> Result<YuvPlanes> {
     let with_alpha = has_alpha_u16(image);
     let mut planes = YuvPlanes::new(width, height, with_alpha);
     let w = width as usize;
     let h = height as usize;
     let uv_width = width.div_ceil(2) as usize;
-    let sfix = precision_shift(16);
-    let y_coeffs = scale_matrix(&WEBP_RGB_TO_Y, 16);
-    let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, 16);
-    let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, 16);
+    let bit_depth = effective_u16_bit_depth();
+    let sfix = precision_shift(bit_depth);
+    let y_coeffs = scale_matrix(&WEBP_RGB_TO_Y, bit_depth);
+    let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, bit_depth);
+    let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, bit_depth);
 
     let mut luma = vec![0u16; w * h];
     let mut residuals = vec![[0i32; 3]; uv_width * height.div_ceil(2) as usize];
@@ -191,8 +196,9 @@ fn fill_y_plane_u8(image: &[u8], y_plane: &mut [u8]) {
 }
 
 fn fill_y_plane_u16(image: &[u16], y_plane: &mut [u8]) {
-    let sfix = precision_shift(16);
-    let coeffs = scale_matrix(&WEBP_RGB_TO_Y, 16);
+    let bit_depth = effective_u16_bit_depth();
+    let sfix = precision_shift(bit_depth);
+    let coeffs = scale_matrix(&WEBP_RGB_TO_Y, bit_depth);
     for (dst, pixel) in y_plane.iter_mut().zip(image.chunks_exact(4)) {
         *dst = rgb_to_component_8bit(
             import_u16(pixel[0]) as i32,
@@ -252,10 +258,11 @@ fn fill_uv_plane_u16(
     u_plane: &mut [u8],
     v_plane: &mut [u8],
 ) {
-    let sfix = precision_shift(16);
+    let bit_depth = effective_u16_bit_depth();
+    let sfix = precision_shift(bit_depth);
     let uv_width = (width + 1) / 2;
-    let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, 16);
-    let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, 16);
+    let u_coeffs = scale_matrix(&WEBP_RGB_TO_U, bit_depth);
+    let v_coeffs = scale_matrix(&WEBP_RGB_TO_V, bit_depth);
 
     for block_y in (0..height).step_by(2) {
         for block_x in (0..width).step_by(2) {
