@@ -1,18 +1,33 @@
 [package]
 name = "img2webp-hq"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.89"
+description = "High-quality JPEG, PNG, and WebP to WebP converter and Rust library"
+repository = "https://github.com/bronekot/img2webp-hq"
+homepage = "https://github.com/bronekot/img2webp-hq"
+readme = "README.md"
+keywords = ["webp", "image", "conversion", "resize"]
+categories = ["multimedia::images", "command-line-utilities"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+
+[[bin]]
+name = "img2webp-hq"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
 bytemuck = { version = "1.23.1", features = ["extern_crate_alloc"] }
-clap = { version = "4.5.38", features = ["derive"] }
+clap = { version = "4.5.38", features = ["derive"], optional = true }
 fast_image_resize = "6.0.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jpegli = { git = "https://github.com/bronekot/rust-jpegli.git", rev = "20fc30ea93c8661940e2b5182a6b73ef563484fa", package = "jpegli" }
 lcms2 = "6.1.1"
 rayon = "1.10.0"
-thiserror = "2.0.12"
-webpx = { version = "0.1.3", features = ["icc"] }
+webpx = { version = "0.4.0", features = ["icc"] }
 
 [dev-dependencies]
 tempfile = "3.20.0"

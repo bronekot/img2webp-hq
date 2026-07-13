@@ -4,7 +4,7 @@ use fast_image_resize::{
     FilterType, PixelType, ResizeAlg, ResizeOptions as FirResizeOptions, Resizer,
 };
 
-use crate::cli::{ResizeFilter, ResizeOptions};
+use crate::config::{ResizeFilter, ResizeOptions};
 use crate::decode::{WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 

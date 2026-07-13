@@ -2,6 +2,7 @@ use std::fmt;
 use std::io;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     Io(io::Error),
     Image(image::ImageError),
@@ -50,7 +51,15 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Image(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for Error {
     fn from(value: io::Error) -> Self {

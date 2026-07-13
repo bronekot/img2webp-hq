@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
+use crate::config::{ConversionOptions, Mode, ResizeFilter, ResizeOptions};
 use crate::error::{Error, Result};
 use crate::metadata::MetadataPolicy;
 
@@ -106,139 +107,25 @@ struct Cli {
     resize_filter: Option<ResizeFilterArg>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResizeFilter {
-    Lanczos3,
-    CatmullRom,
-    Mitchell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Lossy,
-    Lossless,
-    NearLossless(u8),
-}
-
 #[derive(Debug, Clone)]
-pub struct ResizeOptions {
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub max_width: Option<u32>,
-    pub max_height: Option<u32>,
-    pub max_side: Option<u32>,
-    pub no_upscale: bool,
-    pub filter: Option<ResizeFilter>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Job {
+pub(crate) struct FileJob {
     pub input: PathBuf,
     pub output: PathBuf,
-    pub mode: Mode,
-    pub quality: f32,
-    pub alpha_quality: u8,
-    pub method: u8,
-    pub sns_strength: Option<u8>,
-    pub filter_strength: Option<u8>,
-    pub exact: bool,
-    pub sharpyuv: bool,
-    pub fast: bool,
-    pub fast_hq: bool,
-    pub metadata: MetadataPolicy,
-    pub resize: ResizeOptions,
+    pub options: ConversionOptions,
 }
 
-impl Job {
-    pub fn validate(&self) -> Result<()> {
-        if self.fast && self.fast_hq {
-            return Err(Error::invalid(
-                "`--fast` and `--fasthq` cannot be used together",
-            ));
-        }
-        if self.fast_hq && self.sharpyuv {
-            return Err(Error::invalid(
-                "`--fasthq` cannot be combined with `--sharpyuv`",
-            ));
-        }
-        if self.fast_hq && !matches!(self.mode, Mode::Lossy) {
-            return Err(Error::invalid(
-                "`--fasthq` is available only for lossy encoding",
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn uses_simpleyuv(&self) -> bool {
-        !self.sharpyuv
-    }
-
-    pub fn uses_fast_decode(&self) -> bool {
-        self.fast
-    }
-}
-
-pub fn parse_from_env() -> Result<Job> {
+pub(crate) fn parse_from_env() -> Result<FileJob> {
     let args = normalize_cwebp_style_args(std::env::args_os());
     let cli = Cli::parse_from(args);
     validate(cli)
 }
 
-fn validate(cli: Cli) -> Result<Job> {
+fn validate(cli: Cli) -> Result<FileJob> {
     if cli.lossless && cli.near_lossless.is_some() {
         return Err(Error::invalid(
             "`-lossless` and `-near_lossless` cannot be used together",
         ));
     }
-    if cli.fast && cli.fast_hq {
-        return Err(Error::invalid(
-            "`--fast` and `--fasthq` cannot be used together",
-        ));
-    }
-    if (cli.width.is_some() || cli.height.is_some())
-        && (cli.max_width.is_some() || cli.max_height.is_some())
-    {
-        return Err(Error::invalid(
-            "`--width/--height` cannot be combined with `--max-width/--max-height`",
-        ));
-    }
-    if cli.max_side.is_some()
-        && (cli.width.is_some()
-            || cli.height.is_some()
-            || cli.max_width.is_some()
-            || cli.max_height.is_some())
-    {
-        return Err(Error::invalid(
-            "`--max-side` cannot be combined with other resize size flags",
-        ));
-    }
-    if cli.method > 6 {
-        return Err(Error::invalid("`-m` must be in the range 0..=6"));
-    }
-    if cli.alpha_quality > 100 {
-        return Err(Error::invalid("`-alpha_q` must be in the range 0..=100"));
-    }
-    if let Some(value) = cli.near_lossless
-        && value > 100
-    {
-        return Err(Error::invalid(
-            "`-near_lossless` must be in the range 0..=100",
-        ));
-    }
-    if !(0.0..=100.0).contains(&cli.quality) {
-        return Err(Error::invalid("`-q` must be in the range 0..=100"));
-    }
-    if let Some(value) = cli.sns_strength
-        && value > 100
-    {
-        return Err(Error::invalid("`-sns` must be in the range 0..=100"));
-    }
-    if let Some(value) = cli.filter_strength
-        && value > 100
-    {
-        return Err(Error::invalid("`-f` must be in the range 0..=100"));
-    }
-
     let mode = if cli.lossless {
         Mode::Lossless
     } else if let Some(value) = cli.near_lossless {
@@ -262,8 +149,8 @@ fn validate(cli: Cli) -> Result<Job> {
         None => None,
     };
 
-    let job = return_job(cli, mode, metadata, filter)?;
-    job.validate()?;
+    let job = return_job(cli, mode, metadata, filter);
+    job.options.validate()?;
     Ok(job)
 }
 
@@ -272,31 +159,33 @@ fn return_job(
     mode: Mode,
     metadata: MetadataPolicy,
     filter: Option<ResizeFilter>,
-) -> Result<Job> {
-    Ok(Job {
+) -> FileJob {
+    FileJob {
         input: cli.input,
         output: cli.output,
-        mode,
-        quality: cli.quality,
-        alpha_quality: cli.alpha_quality,
-        method: cli.method,
-        sns_strength: cli.sns_strength,
-        filter_strength: cli.filter_strength,
-        exact: cli.exact,
-        sharpyuv: cli.sharpyuv,
-        fast: cli.fast,
-        fast_hq: cli.fast_hq,
-        metadata,
-        resize: ResizeOptions {
-            width: cli.width,
-            height: cli.height,
-            max_width: cli.max_width,
-            max_height: cli.max_height,
-            max_side: cli.max_side,
-            no_upscale: cli.no_upscale,
-            filter,
+        options: ConversionOptions {
+            mode,
+            quality: cli.quality,
+            alpha_quality: cli.alpha_quality,
+            method: cli.method,
+            sns_strength: cli.sns_strength,
+            filter_strength: cli.filter_strength,
+            exact: cli.exact,
+            sharpyuv: cli.sharpyuv,
+            fast: cli.fast,
+            fast_hq: cli.fast_hq,
+            metadata,
+            resize: ResizeOptions {
+                width: cli.width,
+                height: cli.height,
+                max_width: cli.max_width,
+                max_height: cli.max_height,
+                max_side: cli.max_side,
+                no_upscale: cli.no_upscale,
+                filter,
+            },
         },
-    })
+    }
 }
 
 fn normalize_cwebp_style_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
@@ -479,9 +368,9 @@ mod tests {
         })
         .unwrap();
 
-        assert!(job.sharpyuv);
-        assert!(!job.uses_simpleyuv());
-        assert!(!job.uses_fast_decode());
+        assert!(job.options.sharpyuv);
+        assert!(!job.options.uses_simpleyuv());
+        assert!(!job.options.uses_fast_decode());
     }
 
     #[test]

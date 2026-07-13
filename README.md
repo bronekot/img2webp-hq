@@ -1,11 +1,21 @@
 # img2webp-hq
 
-High-quality JPEG, PNG, and WebP to WebP converter. Resizing is performed in linear RGB, ICC profiles are honored, and lossy output uses gamma-aware 4:2:0 chroma subsampling by default.
+High-quality JPEG, PNG, and WebP to WebP converter and Rust library. Resizing is performed in linear RGB, ICC profiles are honored, and lossy output uses gamma-aware 4:2:0 chroma subsampling by default.
 
-## Build
+The package provides both an in-memory library API and the `img2webp-hq` command-line tool. They use the same conversion pipeline and options.
+
+## Command-line tool
+
+Build the release binary:
 
 ```bash
 cargo build --release
+```
+
+Or install it directly from GitHub:
+
+```bash
+cargo install --git https://github.com/bronekot/img2webp-hq.git --locked
 ```
 
 The release binary is portable: it is not compiled for the build machine's CPU. SIMD in the image resizer and worker threads are selected at runtime.
@@ -27,12 +37,51 @@ Useful modes:
 
 Run `img2webp-hq --help` for the complete option list.
 
+## Rust library
+
+Add the project as a dependency from GitHub:
+
+```toml
+[dependencies]
+img2webp-hq = { git = "https://github.com/bronekot/img2webp-hq.git", default-features = false }
+```
+
+Use `convert` when the encoded input image is already in memory:
+
+```rust
+use img2webp_hq::{ConversionOptions, MetadataPolicy, convert};
+
+let source = std::fs::read("input.jpg")?;
+let options = ConversionOptions::default()
+    .with_quality(82.0)
+    .with_max_side(1600)
+    .with_metadata(MetadataPolicy::None);
+let webp = convert(&source, &options)?;
+std::fs::write("output.webp", webp)?;
+# Ok::<(), img2webp_hq::Error>(())
+```
+
+For file-to-file conversion, use the convenience adapter:
+
+```rust
+use img2webp_hq::{ConversionOptions, convert_file};
+
+let options = ConversionOptions::default()
+    .with_quality(82.0)
+    .with_max_side(1600);
+convert_file("input.jpg", "output.webp", &options)?;
+# Ok::<(), img2webp_hq::Error>(())
+```
+
+The default `cli` feature builds the command-line tool and enables `clap`. Library-only consumers can disable default features as shown above to avoid the CLI dependency.
+
 ## Quality and regression checks
 
 The normal test suite verifies all encoding modes, ICC handling, orientation, RGB/RGBA and 8/16-bit paths, and exact YUV equivalence of the accelerated `--fasthq` resize path:
 
 ```bash
 cargo test --all-targets
+cargo test --no-default-features --test public_api
 cargo clippy --all-targets -- -D warnings
 ```
 

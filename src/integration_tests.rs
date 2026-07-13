@@ -1,4 +1,5 @@
 use std::fs::{self, File};
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::time::Instant;
 use std::{hint::black_box, path::PathBuf};
@@ -10,39 +11,48 @@ use lcms2::{CIExyY, Profile, ToneCurve};
 use tempfile::tempdir;
 use webpx::{get_exif, get_icc_profile};
 
-use crate::cli::{Job, Mode, ResizeOptions};
 use crate::cms::ColorPipeline;
+use crate::config::{ConversionOptions, Mode, ResizeOptions};
 use crate::decode::{self, WorkingData, WorkingImage};
 use crate::error::Error;
 use crate::metadata::MetadataPolicy;
-use crate::pipeline;
 use crate::{sharpyuv, simpleyuv};
 
-fn base_job(input: &Path, output: &Path) -> Job {
-    Job {
+struct TestFileJob {
+    input: PathBuf,
+    output: PathBuf,
+    options: ConversionOptions,
+}
+
+impl Deref for TestFileJob {
+    type Target = ConversionOptions;
+
+    fn deref(&self) -> &Self::Target {
+        &self.options
+    }
+}
+
+impl DerefMut for TestFileJob {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.options
+    }
+}
+
+fn base_job(input: &Path, output: &Path) -> TestFileJob {
+    TestFileJob {
         input: input.to_path_buf(),
         output: output.to_path_buf(),
-        mode: Mode::Lossless,
-        quality: 75.0,
-        alpha_quality: 100,
-        method: 4,
-        sns_strength: None,
-        filter_strength: None,
-        exact: false,
-        sharpyuv: false,
-        fast: false,
-        fast_hq: false,
-        metadata: MetadataPolicy::Icc,
-        resize: ResizeOptions {
-            width: None,
-            height: None,
-            max_width: None,
-            max_height: None,
-            max_side: None,
-            no_upscale: false,
-            filter: None,
-        },
+        options: ConversionOptions::default().with_mode(Mode::Lossless),
     }
+}
+
+fn run(job: TestFileJob) -> crate::Result<()> {
+    crate::convert_file(job.input, job.output, &job.options)
+}
+
+fn decode_file(path: &Path, fast: bool) -> crate::Result<crate::decode::DecodedInput> {
+    let bytes = fs::read(path)?;
+    decode::decode(&bytes, fast)
 }
 
 fn expand_u8_to_u16(data: &[u8]) -> Vec<u16> {
@@ -234,11 +244,11 @@ fn lossless_roundtrips_pixels_and_preserves_icc() {
     ];
 
     write_png_rgba(&input, 2, 2, &pixels, Some(icc), None);
-    let decoded_input = decode::decode(&input, false).unwrap();
+    let decoded_input = decode_file(&input, false).unwrap();
     assert!(decoded_input.metadata.icc.is_some());
 
     let job = base_job(&input, &output);
-    pipeline::run(job).unwrap();
+    run(job).unwrap();
 
     let (width, height, output_pixels, output_icc, output_exif) = read_webp(&output);
     assert_eq!((width, height), (2, 2));
@@ -270,7 +280,7 @@ fn all_modes_produce_decodable_webp_output() {
         job.resize.height = Some(4);
         job.quality = 80.0;
 
-        pipeline::run(job).unwrap();
+        run(job).unwrap();
 
         let (width, height, _pixels, icc, exif) = read_webp(&output);
         assert_eq!((width, height), (4, 4), "{name}");
@@ -287,7 +297,7 @@ fn all_modes_produce_decodable_webp_output() {
     sharpyuv_job.resize.height = Some(4);
     sharpyuv_job.quality = 80.0;
 
-    pipeline::run(sharpyuv_job).unwrap();
+    run(sharpyuv_job).unwrap();
 
     let (width, height, _pixels, icc, exif) = read_webp(&sharpyuv_output);
     assert_eq!((width, height), (4, 4), "lossy-sharpyuv");
@@ -310,14 +320,14 @@ fn applies_orientation_and_clears_exif_metadata() {
         None,
         Some(exif_with_orientation(Orientation::Rotate90)),
     );
-    let decoded_input = decode::decode(&input, false).unwrap();
+    let decoded_input = decode_file(&input, false).unwrap();
     assert_eq!(decoded_input.metadata.orientation, Orientation::Rotate90);
     assert!(decoded_input.metadata.exif.is_some());
 
     let mut job = base_job(&input, &output);
     job.metadata = MetadataPolicy::All;
 
-    pipeline::run(job).unwrap();
+    run(job).unwrap();
 
     let (width, height, output_pixels, _icc, exif) = read_webp(&output);
     assert_eq!((width, height), (1, 2));
@@ -350,7 +360,7 @@ fn rejects_non_rgb_icc_profile() {
     write_png_gray(&input, 1, 1, &[128], Some(gray_profile));
 
     let job = base_job(&input, &output);
-    let err = pipeline::run(job).unwrap_err();
+    let err = run(job).unwrap_err();
     match err {
         Error::Unsupported(message) => {
             assert!(message.contains("only RGB ICC profiles are supported"));
@@ -370,7 +380,7 @@ fn fast_mode_decodes_and_processes_in_u8() {
 
     write_png_rgba(&input, 2, 2, &pixels, None, None);
 
-    let decoded_input = decode::decode(&input, true).unwrap();
+    let decoded_input = decode_file(&input, true).unwrap();
     assert!(decoded_input.image.is_u8());
 
     let mut job = base_job(&input, &output);
@@ -380,7 +390,7 @@ fn fast_mode_decodes_and_processes_in_u8() {
     job.resize.width = Some(4);
     job.resize.height = Some(4);
 
-    pipeline::run(job).unwrap();
+    run(job).unwrap();
 
     let (width, height, _pixels, _icc, _exif) = read_webp(&output);
     assert_eq!((width, height), (4, 4));
@@ -397,7 +407,7 @@ fn fasthq_mode_keeps_high_bit_depth_pipeline() {
 
     write_png_rgba(&input, 2, 2, &pixels, None, None);
 
-    let decoded_input = decode::decode(&input, false).unwrap();
+    let decoded_input = decode_file(&input, false).unwrap();
     assert!(!decoded_input.image.is_u8());
 
     let mut job = base_job(&input, &output);
@@ -407,7 +417,7 @@ fn fasthq_mode_keeps_high_bit_depth_pipeline() {
     job.resize.width = Some(4);
     job.resize.height = Some(4);
 
-    pipeline::run(job).unwrap();
+    run(job).unwrap();
 
     let (width, height, _pixels, _icc, _exif) = read_webp(&output);
     assert_eq!((width, height), (4, 4));
@@ -432,8 +442,8 @@ fn fast_mode_stays_close_to_default_simpleyuv_path() {
     fast_job.quality = 100.0;
     fast_job.metadata = MetadataPolicy::None;
 
-    pipeline::run(normal_job).unwrap();
-    pipeline::run(fast_job).unwrap();
+    run(normal_job).unwrap();
+    run(fast_job).unwrap();
 
     let (_w, _h, normal_pixels, _, _) = read_webp(&normal_output);
     let (_w, _h, fast_pixels, _, _) = read_webp(&fast_output);
@@ -470,7 +480,7 @@ fn fasthq_no_longer_produces_dark_output_after_resize() {
     fasthq_job.metadata = MetadataPolicy::None;
     fasthq_job.resize.max_side = Some(600);
 
-    pipeline::run(fasthq_job).unwrap();
+    run(fasthq_job).unwrap();
 
     let (_, _, fasthq_pixels, _, _) = read_webp(&fasthq_output);
 
@@ -502,7 +512,7 @@ fn fasthq_resize_quality_and_size_gate() {
     reference_job.mode = Mode::Lossless;
     reference_job.metadata = MetadataPolicy::None;
     reference_job.resize.max_side = Some(1200);
-    pipeline::run(reference_job).unwrap();
+    run(reference_job).unwrap();
     let (width, height, reference_pixels, _, _) = read_webp(&reference_output);
 
     for method in [0, 4] {
@@ -514,7 +524,7 @@ fn fasthq_resize_quality_and_size_gate() {
         default_job.method = method;
         default_job.metadata = MetadataPolicy::None;
         default_job.resize.max_side = Some(1200);
-        pipeline::run(default_job).unwrap();
+        run(default_job).unwrap();
 
         let mut fast_hq_job = base_job(input, &fast_hq_output);
         fast_hq_job.mode = Mode::Lossy;
@@ -522,7 +532,7 @@ fn fasthq_resize_quality_and_size_gate() {
         fast_hq_job.fast_hq = true;
         fast_hq_job.metadata = MetadataPolicy::None;
         fast_hq_job.resize.max_side = Some(1200);
-        pipeline::run(fast_hq_job).unwrap();
+        run(fast_hq_job).unwrap();
 
         let (_, _, default_pixels, _, _) = read_webp(&default_output);
         let (_, _, fast_hq_pixels, _, _) = read_webp(&fast_hq_output);
@@ -553,7 +563,7 @@ fn fasthq_resize_quality_and_size_gate() {
 
 #[test]
 fn fasthq_yuv_planes_match_default_pipeline() {
-    let decoded = decode::decode(Path::new("test/2.jpeg"), false).unwrap();
+    let decoded = decode_file(Path::new("test/2.jpeg"), false).unwrap();
     let cms = ColorPipeline::new(decoded.metadata.icc.as_deref()).unwrap();
     let target = crate::resize::compute_target_size(
         decoded.image.width,
@@ -624,8 +634,8 @@ fn fasthq_yuv_planes_match_default_pipeline() {
 #[test]
 fn jpeg_u8_and_u16_simpleyuv_paths_stay_aligned() {
     for input in [Path::new("test/1.jpeg"), Path::new("test/2.jpeg")] {
-        let decoded_u8 = decode::decode(input, true).unwrap();
-        let decoded_u16 = decode::decode(input, false).unwrap();
+        let decoded_u8 = decode_file(input, true).unwrap();
+        let decoded_u16 = decode_file(input, false).unwrap();
         let cms = ColorPipeline::new(decoded_u8.metadata.icc.as_deref()).unwrap();
 
         let data_u8 = match &decoded_u8.image.data {
@@ -695,7 +705,7 @@ fn bench_simpleyuv_vs_sharpyuv_on_same_u8_input() {
     ];
 
     for (path, iterations) in cases {
-        let decoded = decode::decode(&path, true).unwrap();
+        let decoded = decode_file(&path, true).unwrap();
         let cms = ColorPipeline::new(decoded.metadata.icc.as_deref()).unwrap();
         for _ in 0..5 {
             black_box(simpleyuv::working_image_to_yuv420(&decoded.image, &cms).unwrap());
@@ -732,7 +742,7 @@ fn bench_simpleyuv_vs_sharpyuv_on_same_u8_input() {
 #[ignore]
 fn bench_linear_u16_fasthq_paths() {
     let input = Path::new("test/2.jpeg");
-    let decoded = decode::decode(input, false).unwrap();
+    let decoded = decode_file(input, false).unwrap();
     let cms = ColorPipeline::new(decoded.metadata.icc.as_deref()).unwrap();
     let target = crate::resize::compute_target_size(
         decoded.image.width,

@@ -1,21 +1,19 @@
-use std::fs;
-
-use crate::cli::{Job, Mode};
 use crate::cms::{self, ColorPipeline};
+use crate::config::{ConversionOptions, Mode};
 use crate::decode;
 use crate::encode;
 use crate::error::Result;
 use crate::resize;
 
-pub fn run(job: Job) -> Result<()> {
-    job.validate()?;
-    let mut decoded = decode::decode(&job.input, job.uses_fast_decode())?;
+pub fn convert(input: &[u8], options: &ConversionOptions) -> Result<Vec<u8>> {
+    options.validate()?;
+    let mut decoded = decode::decode(input, options.uses_fast_decode())?;
 
     let target =
-        resize::compute_target_size(decoded.image.width, decoded.image.height, &job.resize)?;
-    let fast_hq_resize = job.fast_hq && target.resized;
+        resize::compute_target_size(decoded.image.width, decoded.image.height, &options.resize)?;
+    let fast_hq_resize = options.fast_hq && target.resized;
     let needs_linear_pipeline =
-        target.resized || (job.uses_simpleyuv() && matches!(job.mode, Mode::Lossy));
+        target.resized || (options.uses_simpleyuv() && matches!(options.mode, Mode::Lossy));
     let color_pipeline = if needs_linear_pipeline {
         Some(ColorPipeline::new(decoded.metadata.icc.as_deref())?)
     } else {
@@ -36,7 +34,7 @@ pub fn run(job: Job) -> Result<()> {
             decoded.image.width,
             decoded.image.height,
             target,
-            job.resize.filter,
+            options.resize.filter,
         );
         decoded.image = resize::resize(decoded.image, target, filter)?;
         if fast_hq_resize {
@@ -46,7 +44,5 @@ pub fn run(job: Job) -> Result<()> {
         }
     }
 
-    let webp = encode::encode(&job, &decoded, color_pipeline.as_ref())?;
-    fs::write(&job.output, webp)?;
-    Ok(())
+    encode::encode(options, &decoded, color_pipeline.as_ref())
 }

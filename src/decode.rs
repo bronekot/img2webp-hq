@@ -1,6 +1,4 @@
-use std::fs;
 use std::io::Cursor;
-use std::path::Path;
 
 use image::codecs::jpeg::JpegDecoder;
 use image::codecs::png::PngDecoder;
@@ -174,14 +172,13 @@ impl WorkingData {
     }
 }
 
-pub fn decode(path: &Path, fast: bool) -> Result<DecodedInput> {
-    let bytes = fs::read(path)?;
-    let format = image::guess_format(&bytes).map_err(Error::from)?;
+pub fn decode(bytes: &[u8], fast: bool) -> Result<DecodedInput> {
+    let format = image::guess_format(bytes).map_err(Error::from)?;
 
     match format {
-        ImageFormat::Jpeg => decode_jpeg(&bytes, fast),
-        ImageFormat::Png => decode_png(&bytes, fast),
-        ImageFormat::WebP => decode_webp(&bytes, fast),
+        ImageFormat::Jpeg => decode_jpeg(bytes, fast),
+        ImageFormat::Png => decode_png(bytes, fast),
+        ImageFormat::WebP => decode_webp(bytes, fast),
         _ => Err(Error::unsupported(format!(
             "unsupported input format: {:?}",
             format

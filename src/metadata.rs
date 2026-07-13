@@ -1,6 +1,7 @@
 use image::metadata::Orientation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MetadataPolicy {
     None,
     All,
