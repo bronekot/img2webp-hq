@@ -52,7 +52,8 @@ struct Cli {
     #[arg(
         long = "sharpyuv",
         alias = "sharp_yuv",
-        action = clap::ArgAction::SetTrue
+        action = clap::ArgAction::SetTrue,
+        help = "Use libwebp SharpYUV instead of gamma-aware SimpleYUV"
     )]
     sharpyuv: bool,
 
@@ -65,10 +66,19 @@ struct Cli {
     #[arg(long = "exact", action = clap::ArgAction::SetTrue)]
     exact: bool,
 
-    #[arg(long = "fast", action = clap::ArgAction::SetTrue)]
+    #[arg(
+        long = "fast",
+        action = clap::ArgAction::SetTrue,
+        help = "Use the faster 8-bit decode and processing path"
+    )]
     fast: bool,
 
-    #[arg(long = "fasthq", alias = "fast-hq", action = clap::ArgAction::SetTrue)]
+    #[arg(
+        long = "fasthq",
+        alias = "fast-hq",
+        action = clap::ArgAction::SetTrue,
+        help = "Parallelize high-bit-depth ICC transforms during lossy resize"
+    )]
     fast_hq: bool,
 
     #[arg(long = "metadata", value_enum, default_value_t = MetadataArg::Icc)]
@@ -140,6 +150,25 @@ pub struct Job {
 }
 
 impl Job {
+    pub fn validate(&self) -> Result<()> {
+        if self.fast && self.fast_hq {
+            return Err(Error::invalid(
+                "`--fast` and `--fasthq` cannot be used together",
+            ));
+        }
+        if self.fast_hq && self.sharpyuv {
+            return Err(Error::invalid(
+                "`--fasthq` cannot be combined with `--sharpyuv`",
+            ));
+        }
+        if self.fast_hq && !matches!(self.mode, Mode::Lossy) {
+            return Err(Error::invalid(
+                "`--fasthq` is available only for lossy encoding",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn uses_simpleyuv(&self) -> bool {
         !self.sharpyuv
     }
@@ -233,7 +262,9 @@ fn validate(cli: Cli) -> Result<Job> {
         None => None,
     };
 
-    return_job(cli, mode, metadata, filter)
+    let job = return_job(cli, mode, metadata, filter)?;
+    job.validate()?;
+    Ok(job)
 }
 
 fn return_job(
@@ -304,6 +335,32 @@ fn normalize_cwebp_style_args(args: impl IntoIterator<Item = OsString>) -> Vec<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_cli() -> Cli {
+        Cli {
+            input: PathBuf::from("in.png"),
+            output: PathBuf::from("out.webp"),
+            quality: 75.0,
+            alpha_quality: 100,
+            method: 4,
+            sns_strength: None,
+            filter_strength: None,
+            sharpyuv: false,
+            lossless: false,
+            near_lossless: None,
+            exact: false,
+            fast: false,
+            fast_hq: false,
+            metadata: MetadataArg::Icc,
+            width: None,
+            height: None,
+            max_width: None,
+            max_height: None,
+            max_side: None,
+            no_upscale: false,
+            resize_filter: None,
+        }
+    }
 
     #[test]
     fn rewrites_cwebp_style_long_flags() {
@@ -425,5 +482,29 @@ mod tests {
         assert!(job.sharpyuv);
         assert!(!job.uses_simpleyuv());
         assert!(!job.uses_fast_decode());
+    }
+
+    #[test]
+    fn rejects_fasthq_with_sharpyuv() {
+        let mut cli = valid_cli();
+        cli.fast_hq = true;
+        cli.sharpyuv = true;
+        let err = validate(cli).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "`--fasthq` cannot be combined with `--sharpyuv`"
+        );
+    }
+
+    #[test]
+    fn rejects_fasthq_for_lossless_encoding() {
+        let mut cli = valid_cli();
+        cli.fast_hq = true;
+        cli.lossless = true;
+        let err = validate(cli).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "`--fasthq` is available only for lossy encoding"
+        );
     }
 }

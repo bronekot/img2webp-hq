@@ -1,6 +1,6 @@
 [package]
 name = "img2webp-hq"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -10,8 +10,14 @@ fast_image_resize = "6.0.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jpegli = { git = "https://github.com/bronekot/rust-jpegli.git", rev = "20fc30ea93c8661940e2b5182a6b73ef563484fa", package = "jpegli" }
 lcms2 = "6.1.1"
+rayon = "1.10.0"
 thiserror = "2.0.12"
 webpx = { version = "0.1.3", features = ["icc"] }
 
 [dev-dependencies]
 tempfile = "3.20.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

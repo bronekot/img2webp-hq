@@ -1,48 +1,38 @@
+use rayon::prelude::*;
 use webpx::{Encoder, EncoderConfig, Unstoppable, YuvPlanesRef, embed_exif, embed_icc, embed_xmp};
 
 use crate::cli::{Job, Mode};
-use crate::cms::ResizeColorPipeline;
+use crate::cms::ColorPipeline;
 use crate::decode::{DecodedInput, WorkingColorSpace, WorkingData, WorkingImage};
 use crate::error::{Error, Result};
 use crate::sharpyuv;
 use crate::simpleyuv;
 
-pub fn encode(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
+const PARALLEL_MIN_PIXELS: usize = 256 * 1024;
+
+pub fn encode(
+    job: &Job,
+    decoded: &DecodedInput,
+    color_pipeline: Option<&ColorPipeline>,
+) -> Result<Vec<u8>> {
     match job.mode {
-        Mode::Lossy => encode_lossy(job, decoded),
+        Mode::Lossy => encode_lossy(job, decoded, color_pipeline),
         Mode::Lossless => encode_lossless(job, decoded, None),
         Mode::NearLossless(value) => encode_lossless(job, decoded, Some(value)),
     }
 }
 
-fn encode_lossy(job: &Job, decoded: &DecodedInput) -> Result<Vec<u8>> {
+fn encode_lossy(
+    job: &Job,
+    decoded: &DecodedInput,
+    color_pipeline: Option<&ColorPipeline>,
+) -> Result<Vec<u8>> {
     let planes = if job.uses_simpleyuv() {
-        let cms = ResizeColorPipeline::new(decoded.metadata.icc.as_deref())?;
-        if job.fast_hq {
-            if let Some(planes) = simpleyuv::rgba_to_yuv420_sharpish_linear_u16(&decoded.image) {
-                planes?
-            } else {
-                simpleyuv::rgba_to_yuv420(&decoded.image, &cms)?
-            }
-        } else {
-            simpleyuv::rgba_to_yuv420(&decoded.image, &cms)?
-        }
+        let color_pipeline = color_pipeline.expect("SimpleYUV always creates a color pipeline");
+        simpleyuv::working_image_to_yuv420(&decoded.image, color_pipeline)?
     } else {
         let assume_linear = decoded.image.color_space == WorkingColorSpace::LinearRgb;
-        match &decoded.image.data {
-            WorkingData::U8(data) => sharpyuv::rgba8_to_yuv420(
-                data,
-                decoded.image.width,
-                decoded.image.height,
-                assume_linear,
-            )?,
-            WorkingData::U16(data) => sharpyuv::rgba16_to_yuv420(
-                data,
-                decoded.image.width,
-                decoded.image.height,
-                assume_linear,
-            )?,
-        }
+        sharpyuv::working_image_to_yuv420(&decoded.image, assume_linear)?
     };
 
     let config = base_config(job)
@@ -65,7 +55,7 @@ fn encode_lossless(
     decoded: &DecodedInput,
     near_lossless: Option<u8>,
 ) -> Result<Vec<u8>> {
-    let argb = rgba_to_argb8(&decoded.image);
+    let argb = working_image_to_argb8(&decoded.image);
     let mut config = base_config(job)
         .quality(job.quality)
         .method(job.method)
@@ -86,7 +76,7 @@ fn encode_lossless(
 }
 
 fn base_config(job: &Job) -> EncoderConfig {
-    let mut config = EncoderConfig::new();
+    let mut config = EncoderConfig::new().thread_level(1);
     if let Some(value) = job.sns_strength {
         config = config.sns_strength(value);
     }
@@ -119,29 +109,46 @@ fn attach_metadata(mut webp: Vec<u8>, job: &Job, decoded: &DecodedInput) -> Resu
     Ok(webp)
 }
 
-fn rgba_to_argb8(image: &WorkingImage) -> Vec<u32> {
+fn working_image_to_argb8(image: &WorkingImage) -> Vec<u32> {
+    let parallel =
+        (image.width as usize).saturating_mul(image.height as usize) >= PARALLEL_MIN_PIXELS;
     match &image.data {
-        WorkingData::U8(data) => data
-            .chunks_exact(4)
-            .map(|pixel| {
-                let r = pixel[0] as u32;
-                let g = pixel[1] as u32;
-                let b = pixel[2] as u32;
-                let a = pixel[3] as u32;
-                (a << 24) | (r << 16) | (g << 8) | b
-            })
-            .collect(),
-        WorkingData::U16(data) => data
-            .chunks_exact(4)
-            .map(|pixel| {
-                let r = down16_to_8(pixel[0]) as u32;
-                let g = down16_to_8(pixel[1]) as u32;
-                let b = down16_to_8(pixel[2]) as u32;
-                let a = down16_to_8(pixel[3]) as u32;
-                (a << 24) | (r << 16) | (g << 8) | b
-            })
-            .collect(),
+        WorkingData::Rgb8(data) if parallel => data.par_chunks_exact(3).map(pack_rgb8).collect(),
+        WorkingData::Rgba8(data) if parallel => data.par_chunks_exact(4).map(pack_rgba8).collect(),
+        WorkingData::Rgb16(data) if parallel => data.par_chunks_exact(3).map(pack_rgb16).collect(),
+        WorkingData::Rgba16(data) if parallel => {
+            data.par_chunks_exact(4).map(pack_rgba16).collect()
+        }
+        WorkingData::Rgb8(data) => data.chunks_exact(3).map(pack_rgb8).collect(),
+        WorkingData::Rgba8(data) => data.chunks_exact(4).map(pack_rgba8).collect(),
+        WorkingData::Rgb16(data) => data.chunks_exact(3).map(pack_rgb16).collect(),
+        WorkingData::Rgba16(data) => data.chunks_exact(4).map(pack_rgba16).collect(),
     }
+}
+
+fn pack_rgb8(pixel: &[u8]) -> u32 {
+    (u8::MAX as u32) << 24 | ((pixel[0] as u32) << 16) | ((pixel[1] as u32) << 8) | pixel[2] as u32
+}
+
+fn pack_rgba8(pixel: &[u8]) -> u32 {
+    ((pixel[3] as u32) << 24)
+        | ((pixel[0] as u32) << 16)
+        | ((pixel[1] as u32) << 8)
+        | pixel[2] as u32
+}
+
+fn pack_rgb16(pixel: &[u16]) -> u32 {
+    (u8::MAX as u32) << 24
+        | ((down16_to_8(pixel[0]) as u32) << 16)
+        | ((down16_to_8(pixel[1]) as u32) << 8)
+        | down16_to_8(pixel[2]) as u32
+}
+
+fn pack_rgba16(pixel: &[u16]) -> u32 {
+    ((down16_to_8(pixel[3]) as u32) << 24)
+        | ((down16_to_8(pixel[0]) as u32) << 16)
+        | ((down16_to_8(pixel[1]) as u32) << 8)
+        | down16_to_8(pixel[2]) as u32
 }
 
 fn down16_to_8(value: u16) -> u8 {
